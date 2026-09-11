@@ -42,6 +42,7 @@ Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/
 | `rheinagent_file_upload_finalize` | Staged Bytes validieren und final übernehmen |
 | `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten) |
 | `rheinagent_file_get` | Metadaten (und kleine Text-Inhalte) abrufen |
+| `rheinagent_file_download_prepare` | `download_token` + Data-Plane-URL für große/binäre Dateien erhalten |
 | `rheinagent_file_process_prepare` | Verarbeitungsjob für einen registrierten Processor anlegen |
 | `rheinagent_file_process_apply` | Job ausführen, Ergebnis atomar speichern |
 | `rheinagent_file_job_get` | Job-Status abrufen |

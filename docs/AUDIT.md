@@ -56,7 +56,7 @@ registriert werden (siehe [HANDOFF.md](HANDOFF.md)).
 
 `rheinagent_file_capabilities_get`, `_list`, `_get`, `_job_get`,
 `_result_get` sowie die Prepare-Schritte (`upload_prepare`,
-`process_prepare`, `delete_prepare`) erzeugen höchstens ein
+`download_prepare`, `process_prepare`, `delete_prepare`) erzeugen höchstens ein
 Invocation-Event über `auditInvocation()`. Im `hub`-Modus degradiert ein
 Hub-Fehler hier stillschweigend (Policy `RA_AUDIT_POLICY=normal`) — die
 Tool-Funktion wird dadurch nie blockiert.
@@ -107,6 +107,7 @@ festgelegt — niemals Dateiname, Pfad, Inhalt oder extrahierter Text:
 | `rheinagent_file_upload_finalize` | `file.upload.finalize` (WRITE, write-ahead) | `mime_category`, `final_size_bytes` | Dateiname, Inhalt, Hash als Klartext |
 | `rheinagent_file_list` | `rheinagent_file_list` (Invocation) | `result_count` | Dateinamen der Liste |
 | `rheinagent_file_get` | `rheinagent_file_get` (Invocation) | — | Inhalt |
+| `rheinagent_file_download_prepare` | `rheinagent_file_download_prepare` (Invocation) | — | Dateiname, Pfad, Inhalt |
 | `rheinagent_file_process_prepare` | `rheinagent_file_process_prepare` (Invocation) | `processor_id` | — |
 | `rheinagent_file_process_apply` | `file.process.apply` (WRITE, write-ahead) | `processor_id` | Verarbeitungsergebnis/-inhalt |
 | `rheinagent_file_delete_apply` | `file.delete.apply` (DELETE, write-ahead) | — | Dateiname |

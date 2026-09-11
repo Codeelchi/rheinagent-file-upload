@@ -2,8 +2,8 @@ console.log("Starting RheinAgent File Upload data plane...");
 
 import express from "express";
 import fs from "node:fs";
-import { getPendingUpload, stagingPath, ensureDirs } from "./src/lib/store.js";
-import { MAX_UPLOAD_BYTES } from "./src/lib/security.js";
+import { getPendingUpload, stagingPath, ensureDirs, getDownloadTicket, getFile, filePath } from "./src/lib/store.js";
+import { MAX_UPLOAD_BYTES, type MimeCategory } from "./src/lib/security.js";
 
 /**
  * Upload data plane — deliberately separate process/port from the MCP
@@ -59,6 +59,52 @@ app.put("/upload/:uploadId", async (req, res) => {
     if (aborted) return;
     res.status(500).json({ error: String(err) });
   });
+});
+
+const CONTENT_TYPE_BY_CATEGORY: Record<MimeCategory, string> = {
+  text: "text/plain; charset=utf-8",
+  pdf: "application/pdf",
+  image: "application/octet-stream", // exact image subtype isn't tracked; stays generic/safe
+  archive: "application/octet-stream",
+  unknown: "application/octet-stream",
+};
+
+/**
+ * Download path, mirroring /upload/:uploadId: a client first calls
+ * rheinagent_file_download_prepare on the control plane to get a
+ * download_token, then GETs the bytes here. Only ever serves files already
+ * accepted into data/files/<file_id> — never staging, and never a path
+ * derived from anything client-supplied (filePath() re-validates the
+ * opaque file_id via assertOpaqueId + safeJoin).
+ */
+app.get("/download/:downloadToken", async (req, res) => {
+  const { downloadToken } = req.params;
+  const ticket = await getDownloadTicket(downloadToken).catch(() => undefined);
+  if (!ticket) {
+    res.status(404).json({ error: "unknown or expired download_token" });
+    return;
+  }
+
+  const record = await getFile(ticket.fileId);
+  if (!record || record.pendingDelete) {
+    res.status(410).json({ error: "file no longer available" });
+    return;
+  }
+
+  const target = await filePath(ticket.fileId);
+  res.setHeader("Content-Type", CONTENT_TYPE_BY_CATEGORY[record.mimeCategory]);
+  res.setHeader("Content-Length", String(record.sizeBytes));
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${encodeURIComponent(record.filename)}"`,
+  );
+
+  const readStream = fs.createReadStream(target);
+  readStream.on("error", (err) => {
+    if (!res.headersSent) res.status(500).json({ error: String(err) });
+    else res.destroy();
+  });
+  readStream.pipe(res);
 });
 
 const PORT = Number(process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? 3902);

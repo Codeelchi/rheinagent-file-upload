@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { JsonIndex } from "./jsonIndex.js";
-import { newUploadId, newFileId, newDeleteToken, newJobId, assertOpaqueId } from "./ids.js";
+import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
 import { safeJoin, assertNotSymlink, type MimeCategory } from "./security.js";
 
 const DATA_DIR = path.join(import.meta.dirname, "..", "..", "data");
@@ -11,6 +11,7 @@ const RESULTS_DIR = path.join(DATA_DIR, "results");
 const META_DIR = path.join(DATA_DIR, "meta");
 
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
+const DOWNLOAD_TTL_MS = 15 * 60 * 1000;
 
 export interface PendingUpload {
   uploadId: string;
@@ -46,10 +47,18 @@ export interface DeleteTicket {
   createdAt: string;
 }
 
+export interface DownloadTicket {
+  downloadToken: string;
+  fileId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 const uploads = new JsonIndex<PendingUpload>(path.join(META_DIR, "uploads.json"));
 const files = new JsonIndex<FileRecord>(path.join(META_DIR, "files.json"));
 const jobs = new JsonIndex<JobRecord>(path.join(META_DIR, "jobs.json"));
 const deletes = new JsonIndex<DeleteTicket>(path.join(META_DIR, "deletes.json"));
+const downloads = new JsonIndex<DownloadTicket>(path.join(META_DIR, "downloads.json"));
 
 export async function ensureDirs(): Promise<void> {
   await fs.mkdir(STAGING_DIR, { recursive: true });
@@ -157,6 +166,38 @@ export async function listFilesPage(
 export async function getFile(fileId: string): Promise<FileRecord | undefined> {
   assertOpaqueId(fileId);
   return files.get(fileId);
+}
+
+/**
+ * Download tickets gate the data-plane GET endpoint: a client must first
+ * call the control-plane `rheinagent_file_download_prepare` tool (which
+ * checks the file actually exists and isn't pending-delete) to get a
+ * short-lived, unguessable `download_token`. The token is deliberately
+ * reusable within its TTL (unlike the one-shot delete_token) since a GET
+ * is read-only and idempotent — a client retrying a download shouldn't
+ * need to re-prepare.
+ */
+export async function createDownloadTicket(fileId: string): Promise<DownloadTicket> {
+  const record = await files.get(fileId);
+  if (!record || record.pendingDelete) throw new Error("file not found");
+  const now = Date.now();
+  const ticket: DownloadTicket = {
+    downloadToken: newDownloadToken(),
+    fileId,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + DOWNLOAD_TTL_MS).toISOString(),
+  };
+  await downloads.set(ticket.downloadToken, ticket);
+  return ticket;
+}
+
+export async function getDownloadTicket(downloadToken: string): Promise<DownloadTicket | undefined> {
+  const ticket = await downloads.get(downloadToken);
+  if (ticket && new Date(ticket.expiresAt).getTime() < Date.now()) {
+    await downloads.delete(downloadToken);
+    return undefined;
+  }
+  return ticket;
 }
 
 export async function createDeleteTicket(fileId: string): Promise<DeleteTicket> {

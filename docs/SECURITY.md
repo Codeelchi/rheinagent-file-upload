@@ -9,6 +9,12 @@
   Validierung (Magic-Bytes, Größe, Extension-Konsistenz) passiert
   ausschließlich in der Control Plane (`upload_finalize`), nie in der Data
   Plane selbst.
+- Downloads laufen spiegelbildlich: die Data Plane serviert `GET
+  /download/:downloadToken` ungeprüft gegen den Dateiinhalt — Autorisierung
+  passiert ausschließlich durch Besitz eines gültigen, befristeten Tokens,
+  das nur die Control Plane (`rheinagent_file_download_prepare`) ausstellt
+  und das dabei bereits prüft, dass die Datei existiert und nicht
+  `pendingDelete` ist.
 - Der zentrale Audit Hub (falls `RA_AUDIT_MODE=hub`) ist ein separater
   Trust-Boundary-Partner mit eigenem Service-Credential — siehe [AUDIT.md](AUDIT.md).
 
@@ -106,8 +112,8 @@ gibt es keine Audit-Abhängigkeit und keine Verzögerung.
   (siehe `src/lib/jsonIndex.ts`) — für Einzelbetrieb akzeptiert, nicht für
   Hochlast-Mehrinstanz-Szenarien gedacht.
 - `rheinagent_file_get` liefert Inhalt nur für kleine Textdateien inline;
-  es gibt noch keinen Data-Plane-Download-Endpunkt für größere/binäre
-  Dateien (siehe [HANDOFF.md](HANDOFF.md)).
+  größere/binäre Dateien laufen über `rheinagent_file_download_prepare` +
+  den Data-Plane-`GET /download/:downloadToken`-Endpunkt.
 - Kein TLS/Auth auf Control- oder Data-Plane-HTTP-Ebene in dieser Version —
   für den Produktionsbetrieb muss das über die RheinAgent-Manager-verwaltete
   Service-Identität/Reverse-Proxy-Schicht kommen, nicht aus eigenem Code

@@ -100,7 +100,7 @@ hier, bevor es gemacht wird.
 Vor jedem Release-Tag:
 
 - [ ] `npx tsc --noEmit` fehlerfrei
-- [ ] Manuelle End-to-End-Probe aller 11 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
+- [ ] Manuelle End-to-End-Probe aller 12 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
       für das zuletzt dokumentierte Ergebnis) bzw. die automatisierten Tests
       unter `test/` (siehe [HANDOFF.md](HANDOFF.md) zum aktuellen Abdeckungsstand)
 - [ ] `BUILDLOG.md` aktualisiert

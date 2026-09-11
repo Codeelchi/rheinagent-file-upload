@@ -2,6 +2,51 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Download-Endpunkt für große/binäre Dateien
+
+Nächster unblockierter Punkt aus `docs/HANDOFF.md`s Prioritätenliste:
+Audit-Hub-Live-Verifikation (Punkt 1) hängt an einer Cross-Repo-
+Registrierung in `rheinagent-audit`, die laut HANDOFF ausdrücklich nicht in
+diesem Repo erledigt wird, und diese Session hatte keinen konfigurierten
+Zugriff auf eine laufende Hub-Instanz. Stattdessen umgesetzt: der bisher
+fehlende Download-Pfad für Dateien, die `rheinagent_file_get` nicht inline
+liefert (alles über 64 KiB bzw. nicht-Text).
+
+**Neu:**
+- `newDownloadToken()` (`src/lib/ids.ts`, Präfix `dl_`).
+- `DownloadTicket` + `createDownloadTicket()`/`getDownloadTicket()`
+  (`src/lib/store.ts`, `data/meta/downloads.json`) — 15 min TTL, bewusst
+  **wiederverwendbar** innerhalb der TTL (anders als der Einweg-
+  `delete_token`), weil ein `GET` laut `readOnlyHint`-Konvention idempotent
+  sein muss. `createDownloadTicket` weist Dateien ab, die nicht existieren
+  oder `pendingDelete` sind.
+- Tool `rheinagent_file_download_prepare` (Control Plane, `write`-
+  Gewichtsklasse wie `upload_prepare`/`delete_prepare`) liefert
+  `download_token` + `download_url` gegen die Data Plane.
+- `GET /download/:downloadToken` (Data Plane, `dataplane.ts`) löst das
+  Token auf, liest ausschließlich über `filePath()` (opake, bereits
+  validierte Pfade unter `data/files/`) und streamt mit
+  `Content-Disposition: attachment`. Unbekannter/abgelaufener Token → `404`,
+  inzwischen gelöschte Datei → `410`.
+- `DownloadPrepareResultSchema` (`src/lib/schemas.ts`).
+
+**Getestet:**
+- Live end-to-end gegen beide laufenden Prozesse (Control Plane Port 3901,
+  Data Plane Port 3902) per direktem JSON-RPC + HTTP: Upload → Finalize →
+  Download-Prepare → GET, inkl. Token-Wiederverwendung (zweiter GET mit
+  demselben Token → `200`), unbekannter Token (`404`) und
+  Download-Prepare-Ablehnung für eine `pendingDelete`-Datei.
+- 4 neue automatisierte Tests in `test/store.test.ts` (Round-Trip,
+  unbekanntes Token, unbekannte `file_id`, `pendingDelete`-Ablehnung) —
+  insgesamt jetzt **30 Tests, alle grün**; `npx tsc --noEmit` fehlerfrei.
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (neue "Download"-Sektion +
+Tool-Vertragstabelle), `docs/SECURITY.md` (Trust-Grenzen + "bekannte
+Grenzen"), `docs/AUDIT.md` (Allowlist-Tabelle), `docs/VERSIONING.md`
+(Release-Gate: 11→12 Tools), `README.md`, `docs/HANDOFF.md` (Download-Punkt
+aus "offen" entfernt, Prioritätenliste neu sortiert, Hinweis auf fehlenden
+Audit-Hub-Zugriff in dieser Session ergänzt).
+
 ## 2026-09-11 — Echte Protokoll-2026-07-28-Konformität + MCP-Spec-Nachrüstung
 
 Nach Abgleich mit der offiziellen MCP-Dokumentation festgestellt: Das bis

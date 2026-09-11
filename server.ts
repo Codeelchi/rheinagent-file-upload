@@ -27,6 +27,7 @@ import {
   listFilesPage,
   getFile,
   filePath,
+  createDownloadTicket,
   createDeleteTicket,
   applyDelete,
   createJob,
@@ -48,6 +49,7 @@ import {
   FileViewResultSchema,
   JobResultEnvelopeSchema,
   DeleteTicketResultSchema,
+  DownloadPrepareResultSchema,
 } from "./src/lib/schemas.js";
 
 const logger = createLogger("rheinagent-file-upload.control-plane");
@@ -220,7 +222,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Get file metadata (and small text content inline)",
       description:
-        "Returns metadata for a file_id. For small text-category files, content is inlined; larger or binary files are metadata-only (download via a future data-plane endpoint, not via MCP JSON).",
+        "Returns metadata for a file_id. For small text-category files, content is inlined; larger or binary files are metadata-only — use rheinagent_file_download_prepare to fetch those via the data plane, not MCP JSON.",
       inputSchema: z.object({ file_id: z.string() }),
       outputSchema: FileViewResultSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -238,6 +240,33 @@ function registerTools(server: McpServer): void {
         content: [{ type: "text", text: content ?? `${record.filename} (${record.sizeBytes} bytes, ${record.mimeCategory})` }],
         structuredContent: body,
       };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_download_prepare",
+    {
+      title: "Prepare a file download",
+      description:
+        "Issues a short-lived download_token and data-plane download_url for a file_id. Use this for large/binary files that rheinagent_file_get won't inline; the token is reusable until it expires (15 min).",
+      inputSchema: z.object({ file_id: z.string() }),
+      outputSchema: DownloadPrepareResultSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_download_prepare", "write", async ({ file_id }) => {
+      try {
+        const ticket = await createDownloadTicket(file_id);
+        await auditInvocation("rheinagent_file_download_prepare");
+        const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
+        const body = {
+          download_token: ticket.downloadToken,
+          download_url: `http://localhost:${dataplanePort}/download/${ticket.downloadToken}`,
+          expires_at: ticket.expiresAt,
+        };
+        return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
     }),
   );
 

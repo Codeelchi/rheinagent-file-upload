@@ -7,13 +7,14 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 
 ## Einstieg für eine neue Session
 
-- Letzter Commit auf `main`: `3c7fb9e` ("Migrate to MCP protocol 2026-07-28
-  and close spec-compliance gaps") — Arbeitsverzeichnis zum Zeitpunkt dieses
-  Eintrags sauber, lokal = `origin/main`, keine offenen Änderungen.
+- Letzter Commit auf `main`: siehe `git log -1` — Arbeitsverzeichnis zum
+  Zeitpunkt dieses Eintrags sauber, lokal = `origin/main`, keine offenen
+  Änderungen.
 - Lokaler Checkout: `/home/Technowolf/mcp-ui-test` auf `berry`.
 - Server starten: `npm run serve` (Control Plane, Port 3901) **und**
-  `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für Uploads.
-  `npm test` für die 26 automatisierten Tests, `npx tsc --noEmit` für den Typecheck.
+  `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für
+  Uploads/Downloads. `npm test` für die automatisierten Tests, `npx tsc
+  --noEmit` für den Typecheck.
 - Arbeits-Workflow für dieses Repo (siehe auch Memory
   `feedback_mcp_ui_test_workflow`): jede Änderungsrunde endet mit einem
   `BUILDLOG.md`-Eintrag + Push nach `github.com/Codeelchi/rheinagent-file-upload`,
@@ -21,9 +22,12 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 - **Wichtigster nächster fachlicher Schritt:** Audit-Hub-Live-Verifikation
   (`src/lib/audit.ts` ist nur gegen die Dokumentation implementiert, nie
   gegen eine laufende `rheinagent-audit`-Instanz getestet) — siehe Abschnitt
-  "Offene Cross-Repo-Integrationsarbeit" Punkt 4 unten.
-- Vollständiger aktueller Funktionsstand: alle 11 Tools implementiert und
-  end-to-end verifiziert (Upload/Process/Delete-Flow, Pagination,
+  "Offene Cross-Repo-Integrationsarbeit" Punkt 4 unten. Diese Session hatte
+  dazu keinen Zugriff auf eine laufende Hub-Instanz (kein `rheinagent-audit`-
+  Profil in den verfügbaren MCP-Connectoren) und hat stattdessen den
+  nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
+- Vollständiger aktueller Funktionsstand: alle 12 Tools implementiert und
+  end-to-end verifiziert (Upload/Download/Process/Delete-Flow, Pagination,
   Elicitation-Bestätigung, Legacy- und moderner `2026-07-28`-Protokollpfad).
   Details: `BUILDLOG.md` (neuester Eintrag oben).
 
@@ -93,9 +97,6 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## Innerhalb dieses Repos noch offen (nicht Cross-Repo, aber unerledigt)
 
-- **Kein Download-Endpunkt für große/binäre Dateien.** `rheinagent_file_get`
-  liefert Inhalt nur für kleine Textdateien inline; ein Data-Plane-GET-Pfad
-  für größere/binäre Downloads fehlt noch.
 - **Kein Docker-Setup** für Control-/Data-Plane als zwei Services.
 - **Kein Health-/Doctor-Tool implementiert** — nur als Zielbild in
   [VERSIONING.md](VERSIONING.md) beschrieben.
@@ -115,6 +116,19 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **Download-Endpunkt für große/binäre Dateien.** Neues Tool
+  `rheinagent_file_download_prepare` (Control Plane) legt ein befristetes,
+  wiederverwendbares `download_token` an (`data/meta/downloads.json`,
+  15 min TTL, analog zu `PendingUpload`); `GET /download/:downloadToken`
+  auf der Data Plane streamt die Bytes mit `Content-Disposition: attachment`.
+  Verweigert Downloads für unbekannte/abgelaufene Token (`404`) und für
+  bereits gelöschte/`pendingDelete`-Dateien (`410`/Prepare-Fehler). Live
+  end-to-end getestet (Upload → Finalize → Download-Prepare → GET, inkl.
+  Token-Wiederverwendung und der beiden Fehlerfälle) und mit 4 neuen
+  Store-Tests (`test/store.test.ts`) automatisiert abgesichert — jetzt
+  **12 Tools**, 30 automatisierte Tests, `npx tsc --noEmit` fehlerfrei.
+  `rheinagent_file_get`s Beschreibung verweist jetzt auf dieses Tool statt
+  auf einen "future data-plane endpoint".
 - **SDK-Migration auf Protokoll `2026-07-28`** — `@modelcontextprotocol/server`
   + `@modelcontextprotocol/node` (v2) statt des alten
   `@modelcontextprotocol/sdk` (max. `2025-11-25`). Legacy- und moderne
@@ -136,9 +150,10 @@ sicherheitskritisch.
 ## Nächster Schritt nach jedem obigen Punkt
 
 Reihenfolge-Empfehlung: (1) Audit-Hub-Live-Verifikation, weil sie die
-Kernarchitektur bestätigt, bevor mehr draufgebaut wird → (2) License/Manager/
-Update-Feed-Registrierung, weil sie Voraussetzung für jeden echten
-Kunden-Test ist → (3) Download-Endpunkt, weil er die Hauptlücke der
-aktuellen Tool-Funktionalität ist → (4) Health/Doctor + Docker, weil sie den
-Betrieb erleichtern, aber nichts Funktionales freischalten → (5) UI-
-Wiederanbindung, da explizit optional.
+Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber nur
+mit Zugriff auf eine laufende `rheinagent-audit`-Instanz machbar, den diese
+Session nicht hatte → (2) License/Manager/Update-Feed-Registrierung, weil sie
+Voraussetzung für jeden echten Kunden-Test ist → (3) Health/Doctor +
+Docker, weil sie den Betrieb erleichtern, aber nichts Funktionales
+freischalten → (4) UI-Wiederanbindung, da explizit optional. Download-
+Endpunkt (vormals Punkt 3) ist seit 2026-09-11 erledigt, siehe oben.

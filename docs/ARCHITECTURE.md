@@ -85,6 +85,23 @@ verschiebt sie per `fs.rename` (atomar auf demselben Volume) nach
 gelöscht und die Quarantine verlassen nie — es gibt keinen Pfad, auf dem
 ungeprüfte Bytes in `files/` ankommen.
 
+## Download
+
+Für alles, was nicht als kleine Textdatei inline über `rheinagent_file_get`
+geht (große Dateien, PDFs, Bilder), gilt derselbe Trennungsgrundsatz wie
+beim Upload: Bytes laufen nie durch MCP-JSON. `rheinagent_file_download_prepare`
+prüft, dass die Datei existiert und nicht `pendingDelete` ist, und legt ein
+befristetes (15 min), wiederverwendbares `download_token` an (`data/meta/downloads.json`,
+Muster analog zu `PendingUpload`). Die Data Plane bedient `GET
+/download/:downloadToken`, löst das Token gegen `fileId` auf, liest die
+Datei ausschließlich über `filePath()` (also nur opake, bereits validierte
+Pfade unter `data/files/`) und streamt sie mit `Content-Disposition:
+attachment`. Ein Token ist im Gegensatz zum `delete_token` bewusst nicht
+Einweg — ein `GET` ist laut `readOnlyHint`-Konvention idempotent, ein
+erneuter Abruf mit demselben Token innerhalb der TTL muss also funktionieren.
+Läuft das Token ab oder wird die Datei zwischenzeitlich gelöscht, liefert
+die Data Plane `404` bzw. `410`.
+
 ## Processor-Registry
 
 `src/lib/processors.ts` enthält eine feste `Map<string, Processor>`. Ein
@@ -108,6 +125,7 @@ das `structuredContent` beschreibt — Clients können das laut Spec gegen
 | `rheinagent_file_upload_finalize` | `upload_id` | `FileRecordSchema` | — | critical |
 | `rheinagent_file_list` | `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
+| `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
 | `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |
 | `rheinagent_file_job_get` | `job_id` | `JobRecordSchema` | readOnly, idempotent | read |

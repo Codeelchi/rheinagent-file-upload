@@ -29,6 +29,10 @@ export function newDeleteToken(): string {
   return newId("del");
 }
 
+export function newDownloadToken(): string {
+  return newId("dl");
+}
+
 /** Reject anything that isn't one of our own generated opaque ids before it
  * ever touches a filesystem path. */
 export function assertOpaqueId(id: string): void {

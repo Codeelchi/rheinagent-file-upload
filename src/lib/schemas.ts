@@ -66,3 +66,9 @@ export const DeleteTicketResultSchema = z.object({
   fileId: z.string(),
   createdAt: z.string(),
 });
+
+export const DownloadPrepareResultSchema = z.object({
+  download_token: z.string(),
+  download_url: z.string(),
+  expires_at: z.string(),
+});
