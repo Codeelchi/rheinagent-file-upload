@@ -2,6 +2,19 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — GitHub-Actions-CI-Workflow
+
+Auftrag: letzte Session prüfen und weiterarbeiten. Repo war sauber (working
+tree clean, lokal = `origin/claude/mcp-server-continuation-fb3oq2`), 86
+Tests grün, `tsc --noEmit` fehlerfrei — kein unfertiger Stand vorgefunden.
+Nächster offener Punkt aus `HANDOFF.md` umgesetzt: der zuvor manuelle
+`npm run check` läuft jetzt automatisiert bei jedem Push/PR gegen `main`.
+
+`.github/workflows/ci.yml` (neu) — `actions/checkout` + `actions/setup-node`
+(Node 22, npm-Cache), dann `npm ci` und `npm run check` (Typecheck + alle
+86 Tests). Keine funktionalen Code-Änderungen an diesem Produkt selbst,
+reine Absicherung des Release-Gates aus `VERSIONING.md`.
+
 ## 2026-09-11 — rheinagent_file_verify, Processor-Optionen, jsonIndex-Tests
 
 Auftrag: weitere Verbesserungen/Features für den MCP überlegen und

@@ -107,12 +107,6 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
   anderen Tool-Namen wurde entfernt, siehe [BUILDLOG.md](../BUILDLOG.md)).
   UI ist laut Vorgabe optional — Business-Funktionen sind vollständig ohne
   UI nutzbar; eine Wiederanbindung ist rein additiv und blockiert nichts.
-- **Kein automatisierter CI-Lauf** — Tests existieren unter `test/` (siehe
-  [VERSIONING.md](VERSIONING.md) Release-Gate), laufen aber aktuell nur
-  manuell per `npm test`. Am 2026-09-11 bewusst auf Nutzerwunsch
-  zurückgestellt (Health/Doctor-Tool stattdessen priorisiert) — ein
-  einfacher GitHub-Actions-Workflow (`tsc --noEmit` + `npm test` bei jedem
-  Push/PR gegen `main`) ist der naheliegende nächste Schritt dafür.
 - **Archiv-/Entpack-Processor nicht vorhanden** — Archivformate werden
   komplett abgelehnt (siehe [SECURITY.md](SECURITY.md)); sobald ein
   Entpack-Processor gewünscht ist, müssen dafür echte Archive-Bomb-Limits
@@ -122,6 +116,10 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **GitHub-Actions-CI-Workflow.** `.github/workflows/ci.yml` — `npm ci` +
+  `npm run check` (Typecheck + alle 86 Tests) bei jedem Push/PR gegen
+  `main`. Vorher lief `npm run check` nur manuell; jetzt automatisiert
+  abgesichert.
 - **`rheinagent_file_verify` (Integritäts-Check) + parametrisierbare
   Processor-Optionen.** Zwei weitere Features:
   1. **`rheinagent_file_verify`** (neu, 16. Tool) — liest eine Datei neu von
@@ -316,8 +314,8 @@ Reihenfolge-Empfehlung: (1) Audit-Hub-Live-Verifikation, weil sie die
 Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber nur
 mit Zugriff auf eine laufende `rheinagent-audit`-Instanz machbar, den diese
 Session nicht hatte → (2) License/Manager/Update-Feed-Registrierung, weil sie
-Voraussetzung für jeden echten Kunden-Test ist → (3) CI-Workflow (auf
-Nutzerwunsch am 2026-09-11 zurückgestellt) + Docker, weil sie den Betrieb
-erleichtern, aber nichts Funktionales freischalten → (4) UI-Wiederanbindung,
-da explizit optional. Download-Endpunkt und Health/Doctor-Tool (vormals
-Punkt 3) sind seit 2026-09-11 erledigt, siehe oben.
+Voraussetzung für jeden echten Kunden-Test ist → (3) Docker-Setup, weil es
+den Betrieb erleichtert, aber nichts Funktionales freischaltet → (4)
+UI-Wiederanbindung, da explizit optional. Download-Endpunkt, Health/Doctor-
+Tool und CI-Workflow (vormals Punkt 3) sind seit 2026-09-11 erledigt, siehe
+oben.
