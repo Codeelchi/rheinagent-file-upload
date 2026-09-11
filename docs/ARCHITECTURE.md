@@ -33,7 +33,7 @@ Fehlfunktion.
 │  Control Plane           │       │  Data Plane               │
 │  server.ts (Port 3901)   │       │  dataplane.ts (Port 3902) │
 │  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (PUT/GET)      │
-│  17 öffentliche Tools    │       │  keine MCP-Tools, kein     │
+│  18 öffentliche Tools    │       │  keine MCP-Tools, kein     │
 │  Business-/Sicherheits-  │       │  Audit, keine Business-    │
 │  logik, Audit-Aufrufe    │       │  logik — Staging-Write,    │
 │                           │       │  Download-Read, /healthz  │
@@ -269,6 +269,7 @@ erst über einen `rate limit exceeded`-Fehler zu lernen.
 | `rheinagent_file_rename` | `file_id`, `new_filename` | `FileRecordSchema` | idempotent | write |
 | `rheinagent_file_verify` | `file_id` | `FileVerifyResultSchema` | readOnly, idempotent | read |
 | `rheinagent_file_duplicate_check` | genau eins von `file_id`/`sha256` | `DuplicateCheckResultSchema` | readOnly, idempotent | read |
+| `rheinagent_file_knowledge_handoff_prepare` | `file_id`, `extraction_job_id?` | `KnowledgeHandoffResultSchema` | readOnly, idempotent | read |
 | `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
 | `rheinagent_file_process_prepare` | `file_id`, `processor_id`, `options?` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |

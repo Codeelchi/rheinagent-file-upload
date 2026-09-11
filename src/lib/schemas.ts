@@ -115,6 +115,26 @@ export const DuplicateCheckInputSchema = z
   .object({ file_id: FileIdField.optional(), sha256: Sha256Field.optional() })
   .refine((v) => (v.file_id ? !v.sha256 : !!v.sha256), { message: "provide exactly one of file_id or sha256" });
 
+export const KnowledgeHandoffResultSchema = z.object({
+  target: z.literal("knowledge"),
+  source: z.object({
+    file_id: z.string(),
+    sha256: z.string(),
+    mime_category: z.string(),
+    original_filename: z.string(),
+  }),
+  contribution: z.object({
+    topic: z.string().nullable(),
+    department: z.string().nullable(),
+    scope: z.string().nullable(),
+    answers: z.array(z.object({ question: z.string(), answer: z.string() })),
+    statements: z.array(z.object({ text: z.string() })),
+  }),
+  requires_user_input: z.array(z.string()),
+  warnings: z.array(z.string()),
+  ready: z.boolean(),
+});
+
 export const JobResultEnvelopeSchema = z.object({
   job_id: z.string(),
   result: z.record(z.string(), z.unknown()),

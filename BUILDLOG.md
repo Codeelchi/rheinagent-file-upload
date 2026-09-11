@@ -2,6 +2,59 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Knowledge-Handoff-Contract (`rheinagent_file_knowledge_handoff_prepare`, 18. Tool)
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 6 (Knowledge-
+Integration) der priorisierten Reihenfolge. Vorgabe: lose Kopplung, **kein**
+Bypass von Knowledges eigenem Contribution-/Review-/Publish-Flow, keine
+erfundenen `scope`/`classification`/`owner`-Werte.
+
+**Erst recherchiert, dann gebaut.** Ein Subagent hat den tatsächlichen
+`main`-Stand von `Codeelchi/rheinagent-knowledge-mcp` gelesen (nicht nur
+dessen Dokumentation): `knowledge_contribution_create` akzeptiert
+**ausschließlich** `{topic, department, scope, answers[], statements[]}`
+— **kein** `title`/`content`/`tags`/`classification`-Feld existiert dort
+bei Contribution-Erstellung überhaupt (die Zielvorgabe für diese Session
+ging von einem anderen, generischeren Schema aus — der reale Contract war
+enger). `scope` muss zudem einer dem aufrufenden Principal bereits
+gewährten Data-Scope entsprechen (`contributionScopeAllowed()` prüft
+`principal.dataScopes`), ist also strukturell nie frei erfindbar.
+
+**`rheinagent_file_knowledge_handoff_prepare`** (neu, rein lesend) —
+`src/lib/knowledgeHandoff.ts` baut aus einem `file_id` + optionalem
+`extraction_job_id` (bereits abgeschlossener Extraction-Job derselben
+Datei) einen Vorschlag in exakt der oben verifizierten Knowledge-Form:
+- `topic`: Dateiname (Vorschlag, keine Erfindung).
+- `department`/`scope`: **immer `null`** + Eintrag in `requires_user_input`
+  — dieses Produkt hat keine Knowledge-Tenant-Identität und kann diese
+  Werte strukturell nicht kennen, geschweige denn raten.
+- `answers`: immer `[]`.
+- `statements`: aus dem `text`-Feld des Job-Ergebnisses, auf
+  Absatzgrenzen gesplittet, hart auf Knowledges eigene Grenzen begrenzt
+  (max. 100 Statements, je max. 5000 Zeichen) — der Aufrufer kann das
+  Ergebnis ohne eigenes Nach-Chunking direkt an
+  `knowledge_contribution_create` weiterreichen.
+- `ready: true` bedeutet **nur** "trägt echten Content", nie "sicher
+  automatisch einreichbar" — es gibt keinen automatischen Übergang zu
+  Knowledges eigenen Tools.
+
+Ruft Knowledge **nie selbst auf** — reine Vorschlagserstellung, die
+Einreichung bleibt bewusst beim aufrufenden Client/Agenten mit dessen
+eigener Knowledge-Identität.
+
+Live end-to-end über echten HTTP-Flow verifiziert: Upload einer
+Zwei-Absatz-Textdatei → ohne `extraction_job_id`: `ready: false`,
+`statements: []`, erklärende `warnings` → mit vorher per `text_extract`
+abgeschlossenem Job: `ready: true`, zwei `statements` exakt entsprechend
+den beiden Absätzen, `department`/`scope` weiterhin `null`.
+
+10 neue automatisierte Tests (`test/knowledgeHandoff.test.ts`: Chunking-
+Grenzfälle, nie erfundenes `department`/`scope`, Job-nicht-abgeschlossen-
+Warnung, fehlendes `text`-Feld) — jetzt **18 Tools**, **152 automatisierte
+Tests**, `npm run check` fehlerfrei. Neue Referenz-Doku
+[KNOWLEDGE-INTEGRATION.md](docs/KNOWLEDGE-INTEGRATION.md) (vollständige
+Contract-Dokumentation inkl. der Recherche-Erkenntnisse).
+
 ## 2026-09-11 — `rheinagent_file_duplicate_check` (17. Tool)
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 5 (Deduplikation)

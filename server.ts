@@ -43,6 +43,7 @@ import {
   verifyFile,
   findFilesBySha256,
 } from "./src/lib/store.js";
+import { buildKnowledgeHandoffProposal } from "./src/lib/knowledgeHandoff.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds, processorSupportsMimeCategory } from "./src/lib/processors.js";
 import { checkRateLimit, RateLimitExceededError, type WeightClass } from "./src/lib/rateLimit.js";
@@ -57,6 +58,7 @@ import {
   FileVerifyResultSchema,
   DuplicateCheckResultSchema,
   DuplicateCheckInputSchema,
+  KnowledgeHandoffResultSchema,
   JobResultEnvelopeSchema,
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
@@ -409,6 +411,43 @@ function registerTools(server: McpServer): void {
         return {
           content: [{ type: "text", text: duplicates.length === 0 ? "no duplicates found." : `${duplicates.length} duplicate(s) found.` }],
           structuredContent: { sha256: targetSha256!, duplicates: duplicates.map(toWireFile) },
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_knowledge_handoff_prepare",
+    {
+      title: "Prepare a Knowledge contribution proposal",
+      description:
+        "Builds a proposal shaped for rheinagent-knowledge-mcp's own knowledge_contribution_create tool ({topic, department, scope, answers, statements}) from an accepted file and (optionally) an already-completed extraction job's text result. This does NOT call Knowledge and does NOT publish anything — it never bypasses Knowledge's own contribution/review/publish flow. department and scope always come back null with an entry in requires_user_input: this product has no Knowledge tenant identity and cannot know which data scopes the calling principal has been granted there, so it never invents one. Pass extraction_job_id (a completed job for this file, e.g. from text_extract/docx_extract_text/pdf_extract_text) to include its text as statements; without it the proposal carries no content and a warning explains why.",
+      inputSchema: z.object({ file_id: FileIdField, extraction_job_id: JobIdField.optional() }),
+      outputSchema: KnowledgeHandoffResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_knowledge_handoff_prepare", "read", async ({ file_id, extraction_job_id }) => {
+      try {
+        const file = await getFile(file_id);
+        if (!file || file.pendingDelete) {
+          return { content: [{ type: "text", text: `file not found: ${file_id}` }], isError: true };
+        }
+        let job = null;
+        let jobResult: unknown = undefined;
+        if (extraction_job_id) {
+          job = (await getJob(extraction_job_id)) ?? null;
+          if (!job || job.fileId !== file_id) {
+            return { content: [{ type: "text", text: `extraction_job_id ${extraction_job_id} not found for file ${file_id}` }], isError: true };
+          }
+          jobResult = await readJobResult(extraction_job_id);
+        }
+        const proposal = buildKnowledgeHandoffProposal(file, job, jobResult);
+        await auditInvocation("rheinagent_file_knowledge_handoff_prepare", { has_content: proposal.ready });
+        return {
+          content: [{ type: "text", text: proposal.ready ? "proposal prepared with content." : "proposal prepared without content (see warnings)." }],
+          structuredContent: proposal,
         };
       } catch (err) {
         return { content: [{ type: "text", text: String(err) }], isError: true };

@@ -111,7 +111,7 @@ hier, bevor es gemacht wird.
 Vor jedem Release-Tag:
 
 - [ ] `npm run check` fehlerfrei (= `tsc --noEmit` + alle automatisierten Tests unter `test/`)
-- [ ] Manuelle End-to-End-Probe aller 17 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
+- [ ] Manuelle End-to-End-Probe aller 18 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
       für das zuletzt dokumentierte Ergebnis) — automatisierte Tests ersetzen
       das noch nicht vollständig, siehe [HANDOFF.md](HANDOFF.md) zum aktuellen
       Abdeckungsstand
