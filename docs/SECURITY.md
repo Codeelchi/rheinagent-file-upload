@@ -18,6 +18,19 @@
 - Der zentrale Audit Hub (falls `RA_AUDIT_MODE=hub`) ist ein separater
   Trust-Boundary-Partner mit eigenem Service-Credential — siehe [AUDIT.md](AUDIT.md).
 
+## Kein CORS (bewusst)
+
+Beide HTTP-Planes senden **keine** `Access-Control-Allow-*`-Header (bis
+2026-09-11 lief `cors()` ohne Origin-Einschränkung auf der Control Plane —
+entfernt). Reale MCP-Clients (ein Agent-Prozess, `curl`, eine MCP-Client-
+Bibliothek) senden nie einen `Origin`-Header und sind von CORS-Regeln
+unberührt — die einzige praktische Wirkung eines permissiven `cors()` wäre
+gewesen, dass eine im lokalen Browser des Betreibers geöffnete bösartige
+Webseite per `fetch()` gegen `localhost:3901`/`3902` sprechen könnte
+(klassischer Angriffsvektor gegen unauthentifizierte lokale Dienste,
+ergänzend zum Loopback-Bind unten). Da kein legitimer Client CORS braucht,
+war das reine unnötige Angriffsfläche.
+
 ## Opake IDs statt Pfaden (`src/lib/ids.ts`)
 
 Jede Tool-Eingabe, die eine Ressource adressiert (`file_id`, `job_id`,
@@ -86,6 +99,30 @@ Mechanismus der Spec (`InputRequiredResult` → `elicitation/create` →
 akzeptierte `confirm: true`-Antwort bleibt die Datei unverändert liegen.
 Das ist eine echte Protokoll-Ebene-Bestätigung, keine bloße
 Client-UI-Konvention.
+
+## Vollständigkeit der Löschung (Cascade Delete)
+
+`rheinagent_file_delete_apply` entfernt seit 2026-09-11 nicht nur die Datei
+und ihren `FileRecord`, sondern auch jeden `JobRecord` und jedes
+gespeicherte Job-Ergebnis, das sich auf diese Datei bezieht
+(`cascadeDeleteJobsForFile()` in `src/lib/store.ts`). Vorher blieben
+Processor-Ergebnisse nach "Löschung" der Quelldatei unbegrenzt abrufbar —
+bei `text_uppercase` etwa ist das Ergebnis der komplette transformierte
+Dateiinhalt, also faktisch eine zweite, ungelöschte Kopie. "Löschen"
+bedeutet jetzt: Datei-Bytes, Metadaten, alle abgeleiteten Jobs und alle
+abgeleiteten Ergebnisse sind weg.
+
+## Keine verwaisten Upload-Bytes (Staging-Reaper)
+
+Ein PUT auf die Data Plane ohne anschließendes `upload_finalize` (oder ganz
+ohne PUT nach `upload_prepare`) hinterließ vor 2026-09-11 dauerhaft Bytes
+unter `data/staging/` — die 15-Minuten-TTL löschte nur den JSON-Metadaten-
+Eintrag beim nächsten Zugriff, nie die tatsächliche Datei, und ohne
+erneuten Zugriff geschah auch das nie. `sweepOrphanedStaging()` (Control
+Plane, einmal beim Start und danach alle 15 Minuten) entfernt jede
+gestagte Datei ohne noch gültigen Pending-Upload-Eintrag und räumt dabei
+zusätzlich abgelaufene Metadaten-Einträge proaktiv auf, statt auf einen
+zufälligen künftigen Zugriff zu warten.
 
 ## Keine beliebigen Executor-Tools
 

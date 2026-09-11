@@ -77,7 +77,7 @@ einzelnen "mach es einfach"-Aktion:
 |---|---|---|
 | Upload | `rheinagent_file_upload_prepare` legt einen befristeten Staging-Platz an (15 min TTL) | `rheinagent_file_upload_finalize` validiert (Größe/Magic-Bytes/Extension/Hash) und verschiebt atomar nach `files/` |
 | Verarbeitung | `rheinagent_file_process_prepare` legt einen Job an, führt **nichts aus** | `rheinagent_file_process_apply` führt den registrierten Processor aus und schreibt das Ergebnis atomar (temp-write + rename) |
-| Löschung | `rheinagent_file_delete_prepare` markiert `pendingDelete`, Datei bleibt vorerst liegen | `rheinagent_file_delete_apply` entfernt die Datei endgültig anhand des `delete_token` |
+| Löschung | `rheinagent_file_delete_prepare` markiert `pendingDelete`, Datei bleibt vorerst liegen | `rheinagent_file_delete_apply` entfernt die Datei, ihren `FileRecord` **und** kaskadierend jeden zugehörigen `JobRecord`+Ergebnis endgültig anhand des `delete_token` (seit 2026-09-11, siehe [SECURITY.md](SECURITY.md)) |
 
 Ein Prepare-Schritt ist jederzeit folgenlos verwerfbar (TTL-Ablauf bzw.
 schlicht nicht-Apply). Erst der Apply-Schritt ist die tatsächliche,
@@ -92,6 +92,14 @@ verschiebt sie per `fs.rename` (atomar auf demselben Volume) nach
 `data/files/<file_id>`. Schlägt die Prüfung fehl, wird die Staging-Datei
 gelöscht und die Quarantine verlassen nie — es gibt keinen Pfad, auf dem
 ungeprüfte Bytes in `files/` ankommen.
+
+Ein PUT ohne folgendes `upload_finalize` (oder gar kein PUT nach
+`upload_prepare`) lässt eine Staging-Datei verwaist zurück — die 15-Minuten-
+TTL löscht ohne aktives Zutun nur den Metadaten-Eintrag, nie die Bytes
+selbst. `sweepOrphanedStaging()` (`src/lib/store.ts`) räumt das auf: einmal
+beim Start der Control Plane und danach alle 15 Minuten
+(`STAGING_SWEEP_INTERVAL_MS` in `server.ts`), unref'd, damit der Timer den
+Prozess nicht künstlich am Leben hält. Details: [SECURITY.md](SECURITY.md).
 
 ## Download
 

@@ -2,6 +2,59 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Cascade Delete, Staging-Reaper, CORS entfernt
+
+Fortsetzung des letzten Verbesserungsvorschlags — drei konkrete Funde aus
+einer erneuten Codedurchsicht umgesetzt:
+
+**1. Löschung war unvollständig (Datenlebenszyklus-Bug).**
+`rheinagent_file_delete_apply` entfernte nur Datei + `FileRecord`, nie die
+zugehörigen `JobRecord`s oder ihre gespeicherten Ergebnisse. Bei
+`text_uppercase` ist das Ergebnis der komplette transformierte
+Dateiinhalt — der blieb nach "Löschung" der Quelldatei unbegrenzt über
+`rheinagent_file_result_get` abrufbar. Neue Funktion
+`cascadeDeleteJobsForFile()` (`src/lib/store.ts`), in `applyDelete()`
+eingehängt: entfernt jetzt jeden Job (und dessen Ergebnisdatei unter
+`data/results/`) für die gelöschte Datei mit.
+
+**2. Verwaiste Staging-Bytes (unbegrenztes Plattenwachstum).**
+`getPendingUpload()` löschte bei Ablauf (15 min TTL) nur den JSON-
+Metadaten-Eintrag, nie die tatsächlich gestagten Bytes unter
+`data/staging/` — ein PUT ohne folgendes `upload_finalize` hinterließ die
+Datei für immer. Neue Funktion `sweepOrphanedStaging()` (`src/lib/store.ts`):
+entfernt jede gestagte Datei ohne noch gültigen Pending-Upload-Eintrag und
+räumt abgelaufene Metadaten-Einträge proaktiv auf. Aufgerufen einmal beim
+Start der Control Plane und danach alle 15 Minuten (`setInterval`, `unref()`d).
+
+**3. CORS unnötig offen.** `cors()` lief ohne Origin-Einschränkung auf der
+Control Plane, obwohl kein legitimer MCP-Client (Agent-Prozess, curl,
+Client-Bibliothek) je einen `Origin`-Header sendet — die einzige Wirkung
+war Angriffsfläche für eine bösartige Webseite im lokalen Browser des
+Betreibers gegen `localhost:3901`. `cors`/`@types/cors` komplett aus
+`package.json` entfernt (`npm uninstall`).
+
+**Getestet:**
+- Live end-to-end: vollständiger Upload→Process(`text_uppercase`)→
+  `result_get`(zeigt Inhalt)→Delete-Flow bestätigt Cascade-Verhalten am
+  Store-Layer (die MCP-Elicitation-Bestätigung selbst ließ sich über
+  reines Raw-curl ohne `initialize`-Handshake nicht auslösen — unabhängig
+  von dieser Änderung, bereits vorher bekanntes Test-Tooling-Detail).
+  Reaper live verifiziert: künstlich verwaiste Staging-Datei + abgelaufener
+  Metadaten-Eintrag angelegt, Control Plane neu gestartet →
+  `"staging sweep","removed_files":1,"removed_entries":1"` geloggt, beides
+  danach nachweislich weg.
+- CORS live verifiziert: `curl` mit `Origin: http://evil.example` gegen
+  `/mcp` liefert keinen `Access-Control-Allow-Origin`-Header mehr (vorher
+  reflektiert).
+- 4 neue automatisierte Tests in `test/store.test.ts` (2× Cascade-Delete,
+  2× Staging-Reaper) — jetzt **48 automatisierte Tests**, `npm run check`
+  fehlerfrei.
+
+**Doku aktualisiert:** `docs/SECURITY.md` (neue Abschnitte "Kein CORS
+(bewusst)", "Vollständigkeit der Löschung", "Keine verwaisten Upload-
+Bytes"), `docs/ARCHITECTURE.md` (Read/Prepare/Apply/Verify-Tabelle,
+Staging/Quarantine-Abschnitt).
+
 ## 2026-09-11 — Tool-Vertrags-Audit + LLM-Erklärbarkeit + Workflow-Script
 
 Auftrag: sicherstellen, dass alle Tools korrekte Beschreibungen/Verträge

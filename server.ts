@@ -10,7 +10,6 @@ import {
   type InputRequiredResult,
 } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import cors from "cors";
 import express from "express";
 import fs from "node:fs/promises";
 import { z } from "zod";
@@ -37,6 +36,7 @@ import {
   readJobResult,
   checkStagingDirWritable,
   checkFilesDirWritable,
+  sweepOrphanedStaging,
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds } from "./src/lib/processors.js";
@@ -498,7 +498,14 @@ function registerTools(server: McpServer): void {
 }
 
 const expressApp = express();
-expressApp.use(cors());
+// No CORS middleware, deliberately: real MCP clients (an agent process,
+// curl, an MCP client library) call this server directly and never send an
+// Origin header, so they are unaffected either way. The only thing a
+// permissive `cors()` would enable is a malicious page open in the
+// operator's local browser making cross-origin fetch() calls against
+// localhost:3901 — a real attack class against unauthenticated local
+// services, and something this product doesn't need to expose (see
+// docs/SECURITY.md).
 expressApp.use(express.json());
 
 // Per-spec initialize-time guidance for the connecting model — seen once
@@ -539,6 +546,24 @@ const PORT = 3901;
 // to 0.0.0.0) only behind a reverse proxy or other access control.
 const BIND_HOST = process.env.RHEINAGENT_FILE_UPLOAD_BIND_HOST ?? "127.0.0.1";
 await ensureDirs();
+
+// Reclaims disk space from abandoned uploads (see sweepOrphanedStaging()'s
+// docstring in store.ts) once at startup, then on the same cadence as the
+// upload TTL so bytes from uploads that are PUT but never finalized don't
+// accumulate indefinitely during a long-running process. unref()'d so this
+// timer never by itself keeps the process alive.
+const STAGING_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+async function runStagingSweep(): Promise<void> {
+  const { removedFiles, removedEntries } = await sweepOrphanedStaging();
+  if (removedFiles > 0 || removedEntries > 0) {
+    logger.notice("staging sweep", { removed_files: removedFiles, removed_entries: removedEntries });
+  }
+}
+await runStagingSweep();
+setInterval(() => {
+  runStagingSweep().catch((err) => logger.error("staging sweep failed", { message: String(err) }));
+}, STAGING_SWEEP_INTERVAL_MS).unref();
+
 expressApp.listen(PORT, BIND_HOST, () => {
   console.log(`Control plane listening on http://${BIND_HOST}:${PORT}/mcp`);
 });

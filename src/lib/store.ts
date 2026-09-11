@@ -129,6 +129,44 @@ export async function consumePendingUpload(uploadId: string): Promise<void> {
   await uploads.delete(uploadId);
 }
 
+/**
+ * Reclaims disk space from abandoned uploads. `getPendingUpload()` only
+ * ever removes the *metadata* entry when it notices an expired id on
+ * access — it never touches the actual staged bytes under
+ * `data/staging/<upload_id>`, and nothing revisits an id nobody asks about
+ * again. A client that PUTs bytes but never calls `upload_finalize` (or
+ * never PUTs at all) therefore leaves that upload's bytes on disk forever
+ * with no automatic cleanup path. This sweep removes every staged file
+ * whose `upload_id` has no still-valid (non-expired) pending-upload entry,
+ * and proactively drops the now-stale metadata entries too instead of
+ * waiting for someone to access them. Safe to call anytime, including
+ * concurrently with an in-flight PUT for a *different* id — an id that's
+ * still within its TTL is never touched.
+ */
+export async function sweepOrphanedStaging(): Promise<{ removedFiles: number; removedEntries: number }> {
+  const now = Date.now();
+  const pending = await uploads.values();
+  const validIds = new Set<string>();
+  let removedEntries = 0;
+  for (const p of pending) {
+    if (new Date(p.expiresAt).getTime() < now) {
+      await uploads.delete(p.uploadId);
+      removedEntries++;
+    } else {
+      validIds.add(p.uploadId);
+    }
+  }
+
+  let removedFiles = 0;
+  const staged = await fs.readdir(STAGING_DIR).catch(() => [] as string[]);
+  for (const name of staged) {
+    if (validIds.has(name)) continue;
+    await fs.unlink(path.join(STAGING_DIR, name)).catch(() => {});
+    removedFiles++;
+  }
+  return { removedFiles, removedEntries };
+}
+
 export async function finalizeFile(
   uploadId: string,
   meta: { filename: string; sizeBytes: number; mimeCategory: MimeCategory; sha256: string },
@@ -233,6 +271,24 @@ export async function createDeleteTicket(fileId: string): Promise<DeleteTicket> 
   return ticket;
 }
 
+/**
+ * Removes every job (and its stored result, if any) for a given file. Called
+ * as part of `applyDelete()` so "delete this file" actually means delete —
+ * without this, a completed job's result (e.g. `text_uppercase`'s
+ * `transformed_text`, which IS the file's full content) would keep living
+ * in data/results/ and stay retrievable via rheinagent_file_result_get
+ * indefinitely after the source file itself is gone.
+ */
+async function cascadeDeleteJobsForFile(fileId: string): Promise<void> {
+  const allJobs = await jobs.values();
+  for (const job of allJobs) {
+    if (job.fileId !== fileId) continue;
+    await jobs.delete(job.jobId);
+    const resultFile = await resultPath(job.jobId);
+    await fs.unlink(resultFile).catch(() => {}); // no result yet (job never completed) is fine
+  }
+}
+
 export async function applyDelete(deleteToken: string): Promise<FileRecord> {
   const ticket = await deletes.get(deleteToken);
   if (!ticket) throw new Error("delete ticket not found or already applied");
@@ -242,6 +298,7 @@ export async function applyDelete(deleteToken: string): Promise<FileRecord> {
   await fs.unlink(target);
   await files.delete(ticket.fileId);
   await deletes.delete(deleteToken);
+  await cascadeDeleteJobsForFile(ticket.fileId);
   return record;
 }
 

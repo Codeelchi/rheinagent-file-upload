@@ -12,12 +12,10 @@
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
-    "cors": "latest",
     "express": "latest",
     "zod": "^4.6.2"
   },
   "devDependencies": {
-    "@types/cors": "latest",
     "@types/express": "latest",
     "tsx": "latest",
     "typescript": "latest"

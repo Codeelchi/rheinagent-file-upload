@@ -118,6 +118,19 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **Cascade Delete, Staging-Reaper, CORS entfernt.** Drei Funde aus einer
+  weiteren Codedurchsicht: (1) `delete_apply` löschte Jobs/Ergebnisse der
+  gelöschten Datei nicht mit — ein `text_uppercase`-Ergebnis (voller
+  transformierter Dateiinhalt) blieb nach "Löschung" für immer abrufbar;
+  jetzt kaskadierend entfernt (`cascadeDeleteJobsForFile()`). (2)
+  Verwaiste Staging-Bytes bei PUT-ohne-Finalize wuchsen unbegrenzt an;
+  neuer `sweepOrphanedStaging()`-Reaper (Start + alle 15 min). (3) `cors()`
+  lief ohne Origin-Einschränkung, obwohl kein legitimer MCP-Client CORS
+  braucht — komplett entfernt (`npm uninstall cors @types/cors`). Live
+  verifiziert (Reaper: künstlich verwaister Eintrag + Neustart → Log zeigt
+  `removed_files:1,removed_entries:1`, danach nachweislich weg; CORS:
+  `Origin`-Header liefert keinen `Access-Control-Allow-Origin` mehr). 4
+  neue Tests — jetzt **48 automatisierte Tests**.
 - **Tool-Verträge auditiert + LLM-Erklärbarkeit umgesetzt.** Auf Anfrage
   ("stelle sicher, dass die Tools korrekte Beschreibungen/Verträge haben
   und recherchiere zum capabilities-Tool, um einem LLM die Funktionen zu
