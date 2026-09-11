@@ -2,6 +2,67 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Docker/Produktionsrunntime
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 8 (Production
+Runtime) der priorisierten Reihenfolge.
+
+**Build-Skripte** (`package.json`): `npm run build` (`tsc` → `dist/`),
+`npm run start`/`start:dataplane` (`node dist/server.js`/`dist/dataplane.js`
+— reines `node`, kein `tsx`/`typescript` zur Laufzeit). Live verifiziert:
+kompilierter Build läuft standalone, `/mcp` antwortet korrekt.
+
+**`Dockerfile`** (Multi-Stage) — Build-Stage mit `npm ci` (inkl.
+Dev-Dependencies für `tsc`), Runtime-Stage ausschließlich mit `npm ci
+--omit=dev` (kein `tsx`/`typescript` im Runtime-Layer, wie gefordert),
+`node:22-alpine`, non-root `rheinagent`-User.
+
+**`docker-compose.yml`** — zwei Services (`file-control`/`file-data`) aus
+demselben Image, gemeinsames benanntes Volume für `/app/data`. Bewusst
+**kein** Supervisor-Prozess in einem gemeinsamen Container (Docker/Compose
+ist bereits Prozessmanager, ein Supervisor wäre unnötige zusätzliche
+Angriffsfläche) — mirrort stattdessen 1:1 die bestehende
+Zwei-Prozess-Architektur. `network_mode: host` (Linux) statt Bridge +
+Port-Publishing: **echter Bug gefunden und behoben**, bevor er in Produktion
+hätte auffallen können — `upload_url`/`download_url` sowie der interne
+Health-Reachability-Check in `server.ts` waren fest auf `http://localhost:…`
+verdrahtet; unter Bridge-Networking hätte das bedeutet, dass weder die
+Control Plane die Data Plane erreicht noch ein externer MCP-Client die
+zurückgegebene `upload_url` je auflösen könnte. Fix: neue
+`RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST`-Env-Var (Default weiterhin
+`localhost`, keine Verhaltensänderung im bisherigen Einzelprozess-Betrieb)
+plus `network_mode: host` im Compose-Setup, damit `localhost` in beiden
+Containern weiterhin dasselbe bedeutet wie im nicht-containerisierten
+Betrieb — keine zweite Hostname-Konfiguration für intern vs. extern
+beworbene URLs nötig. Sicherheitsmaßnahmen: `read_only: true`,
+`cap_drop: [ALL]`, `no-new-privileges`, Docker-`HEALTHCHECK`.
+
+**Neues Control-Plane-`/healthz`** (`server.ts`, reine HTTP-Liveness,
+kein MCP) — analog zum bereits vorhandenen Data-Plane-`/healthz`, damit
+beide Planes einen einheitlichen, geschäftslogikfreien Liveness-Endpunkt
+für einen Container-Healthcheck haben (bewusst **nicht** dasselbe wie das
+MCP-Tool `rheinagent_file_health_get`, das echte Abhängigkeitschecks macht).
+Live verifiziert.
+
+**CI-Docker-Build-Smoke** (`.github/workflows/ci.yml`, neuer Job
+`docker-build-smoke`) — baut das Image bei jedem Push/PR, damit ein
+kaputtes Dockerfile nicht erst bei einem echten Deploy auffällt.
+
+**Verifikationsstand, ehrlich benannt**: `docker build`/`docker compose up`
+liefen **nicht** gegen einen echten Docker-Daemon (dieser Session stand
+nur der `docker`-CLI-Client ohne laufenden Daemon zur Verfügung) —
+`docker compose config` validiert die Compose-Datei syntaktisch
+fehlerfrei, mehr war lokal nicht möglich. Der eigentliche Programmcode
+(kompilierter Build via `node dist/server.js`) wurde außerhalb von Docker
+live verifiziert. Der neue CI-Job deckt den echten `docker build` ab die
+nächsten Male, wenn dieser Branch pusht/einen PR öffnet — bis dahin gilt
+Docker/Compose als **implementiert, nicht per echtem Docker-Build
+verifiziert**. `docs/INSTALLATION.md` benennt das explizit.
+
+`npm run check` weiterhin fehlerfrei (152 Tests, keine neuen — reine
+Infrastruktur-/Build-Änderung, kein neuer Programmcode mit eigenem
+Testbedarf außer dem bereits bestehenden `server.ts`-Testabdeckungsstand).
+
 ## 2026-09-11 — Knowledge-Handoff-Contract (`rheinagent_file_knowledge_handoff_prepare`, 18. Tool)
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 6 (Knowledge-

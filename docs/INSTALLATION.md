@@ -6,6 +6,7 @@
 |---|---|---|
 | `RHEINAGENT_FILE_UPLOAD_MAX_BYTES` | `26214400` (25 MiB) | Upload-Größenlimit, geprüft in Prepare, beim Stream in der Data Plane und erneut beim Finalize |
 | `RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT` | `3902` | Port der Data Plane; muss mit dem tatsächlich gestarteten `dataplane.ts`-Port übereinstimmen |
+| `RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST` | `localhost` | Hostname, über den die Control Plane die Data Plane erreicht (intern für `health_get` **und** für die an den Client zurückgegebenen `upload_url`/`download_url`) — nur ändern, wenn beide Prozesse tatsächlich nicht über `localhost` erreichbar sind (siehe `docker-compose.yml`, das stattdessen `network_mode: host` nutzt, damit `localhost` in beiden Containern weiterhin dasselbe bedeutet) |
 | `RHEINAGENT_FILE_UPLOAD_BIND_HOST` | `127.0.0.1` | Bind-Host für **beide** Prozesse. Diese Version hat kein TLS/Auth auf HTTP-Ebene (siehe [SECURITY.md](SECURITY.md)) — nur explizit auf `0.0.0.0` o.ä. ändern, wenn ein Reverse Proxy/andere Zugriffskontrolle davorsteht |
 | `RA_AUDIT_MODE` | `off` | `off` oder `hub` — siehe [AUDIT.md](AUDIT.md) |
 | `RA_AUDIT_ENDPOINT` | — | nur bei `hub` erforderlich |
@@ -52,9 +53,40 @@ Aktivierungs-Objekt-Struktur mit dem Manager abgestimmt ist (siehe
 
 ## Docker
 
-Noch nicht bereitgestellt. Ein Dockerfile/Compose-Setup für Control- und
-Data-Plane als zwei Services ist ein sinnvoller nächster Schritt (siehe
-[HANDOFF.md](HANDOFF.md)), aber für diese Version nicht Teil des Repos.
+Seit 2026-09-11 vorhanden: `Dockerfile` (Multi-Stage — Build-Stage mit
+`npm ci` + `tsc`, Runtime-Stage nur mit `npm ci --omit=dev`, kein `tsx`/
+`typescript` im Runtime-Layer) + `docker-compose.yml` (zwei Services,
+`file-control`/`file-data`, aus demselben Image, gemeinsames Volume
+`rheinagent-file-upload-data` für `/app/data`).
+
+```bash
+docker compose up --build
+```
+
+Sicherheitsmaßnahmen im Compose-Setup: `read_only: true` (Root-Dateisystem),
+`cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, non-root
+`rheinagent`-User im Image, `network_mode: host` (Linux — siehe
+`docker-compose.yml`-Kommentar für die Begründung: damit `localhost`
+zwischen den beiden Containern dasselbe bedeutet wie im nicht-containerisierten
+Betrieb, ohne einen zweiten Hostname für interne vs. extern beworbene
+`upload_url`/`download_url` pflegen zu müssen), Docker-`HEALTHCHECK` gegen
+das neue `/healthz`-Control-Plane-Endpoint (analog zum bereits vorhandenen
+Data-Plane-`/healthz`). Kein Supervisor-Prozess in einem gemeinsamen
+Container — bewusste Entscheidung, siehe Kommentar in `docker-compose.yml`:
+Docker/Compose ist bereits der Prozessmanager, ein zusätzlicher Supervisor
+wäre unnötige Komplexität und eigene Angriffsfläche für ein Produkt, dessen
+Architektur ohnehin zwei getrennte Prozesse vorsieht.
+
+**Verifikationsstand**: `docker build`/`docker compose up` **nicht** gegen
+einen echten Docker-Daemon getestet — diese Session hatte nur den
+`docker`-CLI-Client, keinen laufenden Daemon zur Verfügung
+(`docker compose config` validiert die Compose-Datei syntaktisch fehlerfrei,
+das ist alles, was ohne Daemon möglich war). Der kompilierte Build selbst
+(`npm run build` → `node dist/server.js`/`node dist/dataplane.js`) wurde
+außerhalb von Docker live verifiziert (Control Plane startet, beantwortet
+`/mcp`). **Vor Produktivbetrieb**: einmal `docker compose up --build` gegen
+einen echten Daemon fahren und den vollen Upload→Process→Download-Flow
+durchspielen — das ist noch offen.
 
 ## Doctor / Health
 

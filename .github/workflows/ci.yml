@@ -17,3 +17,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run build
+
+  docker-build-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t rheinagent-file-upload:ci .

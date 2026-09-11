@@ -7,7 +7,10 @@
     "serve:dataplane": "tsx dataplane.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:dataplane": "node dist/dataplane.js"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",

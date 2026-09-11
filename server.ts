@@ -79,6 +79,19 @@ const logger = createLogger("rheinagent-file-upload.control-plane");
 // JSON entirely, per the architecture brief.
 const INLINE_CONTENT_MAX_BYTES = 64 * 1024;
 
+// Where the control plane reaches the data plane — both for its own
+// internal health-reachability check and for the upload_url/download_url
+// handed back to an MCP client. Defaults match the pre-2026-09-11
+// single-host assumption (both processes on the same box, "localhost").
+// RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST exists for split-container/
+// split-host deployments (see docker-compose.yml) where the data plane
+// isn't reachable via "localhost" from the control plane's own network
+// namespace, and/or an external MCP client needs a different hostname
+// than the one the control plane itself would use.
+const DATAPLANE_HOST = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST ?? "localhost";
+const DATAPLANE_PORT = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
+const DATAPLANE_BASE_URL = `http://${DATAPLANE_HOST}:${DATAPLANE_PORT}`;
+
 type ToolReturn = CallToolResult | InputRequiredResult;
 
 /**
@@ -140,8 +153,7 @@ function registerTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     guarded("rheinagent_file_health_get", "read", async () => {
-      const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
-      const dataPlaneReachable = await fetch(`http://localhost:${dataplanePort}/healthz`, {
+      const dataPlaneReachable = await fetch(`${DATAPLANE_BASE_URL}/healthz`, {
         signal: AbortSignal.timeout(2000),
       })
         .then((res) => res.ok)
@@ -213,10 +225,9 @@ function registerTools(server: McpServer): void {
         mime_category: classifyExtension(filename) ?? "unknown",
         declared_size_bytes,
       });
-      const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
       const body = {
         upload_id: pending.uploadId,
-        upload_url: `http://localhost:${dataplanePort}/upload/${pending.uploadId}`,
+        upload_url: `${DATAPLANE_BASE_URL}/upload/${pending.uploadId}`,
         expires_at: pending.expiresAt,
       };
       return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
@@ -469,10 +480,9 @@ function registerTools(server: McpServer): void {
       try {
         const ticket = await createDownloadTicket(file_id);
         await auditInvocation("rheinagent_file_download_prepare");
-        const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
         const body = {
           download_token: ticket.downloadToken,
-          download_url: `http://localhost:${dataplanePort}/download/${ticket.downloadToken}`,
+          download_url: `${DATAPLANE_BASE_URL}/download/${ticket.downloadToken}`,
           expires_at: ticket.expiresAt,
         };
         return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
@@ -713,6 +723,17 @@ const mcpHandler = createMcpHandler(
   },
 );
 const nodeHandler = toNodeHandler(mcpHandler);
+
+// Cheap liveness probe for a container orchestrator/Docker HEALTHCHECK —
+// deliberately NOT the same thing as the rheinagent_file_health_get MCP
+// tool (which does real dependency checks: data-plane reachability,
+// storage writability, audit config). This just answers "is the process
+// accepting HTTP requests at all", the same shape as the data plane's own
+// /healthz, so both planes have a uniform, business-logic-free liveness
+// endpoint a container runtime can poll without speaking MCP JSON-RPC.
+expressApp.get("/healthz", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 
 expressApp.all("/mcp", (req, res) => {
   nodeHandler(req, res, req.body).catch((err) => {
