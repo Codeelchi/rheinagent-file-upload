@@ -12,21 +12,23 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  loadStore,
+  docSummary,
+  upsertDocument,
+  getDocument,
+  listDocuments,
+  deleteDocument,
+  type StoredDocument,
+} from "./store.js";
 
 const server = new McpServer({
   name: "RheinAgent Document Workbench Test Server",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 const resourceUri = "ui://documents/mcp-app.html";
 const ui = { ui: { resourceUri } };
-
-type StoredDocument = { id: string; filename: string; content: string };
-const documents = new Map<string, StoredDocument>();
-
-function docSummary(d: StoredDocument) {
-  return { id: d.id, filename: d.filename, length: d.content.length };
-}
 
 registerAppTool(
   server,
@@ -34,14 +36,14 @@ registerAppTool(
   {
     title: "Dokument hochladen",
     description:
-      "Nimmt ein im Widget hochgeladenes Text-Dokument entgegen und speichert es serverseitig.",
+      "Nimmt ein im Widget hochgeladenes Text-Dokument entgegen und speichert es serverseitig (persistent auf Platte).",
     inputSchema: { filename: z.string(), content: z.string() },
     _meta: ui,
   },
   async ({ filename, content }) => {
     const id = `${Date.now()}-${filename}`;
     const doc: StoredDocument = { id, filename, content };
-    documents.set(id, doc);
+    await upsertDocument(doc);
     return {
       content: [
         { type: "text", text: `Dokument "${filename}" hochgeladen (${content.length} Zeichen).` },
@@ -61,7 +63,7 @@ registerAppTool(
     _meta: ui,
   },
   async () => {
-    const list = [...documents.values()].map(docSummary);
+    const list = listDocuments().map(docSummary);
     return {
       content: [
         {
@@ -86,7 +88,7 @@ registerAppTool(
     _meta: ui,
   },
   async ({ id }) => {
-    const doc = documents.get(id);
+    const doc = getDocument(id);
     if (!doc) {
       return { content: [{ type: "text", text: `Dokument ${id} nicht gefunden.` }], isError: true };
     }
@@ -108,17 +110,17 @@ registerAppTool(
     _meta: ui,
   },
   async ({ id, newContent }) => {
-    const doc = documents.get(id);
+    const doc = getDocument(id);
     if (!doc) {
       return { content: [{ type: "text", text: `Dokument ${id} nicht gefunden.` }], isError: true };
     }
-    doc.content = newContent;
-    documents.set(id, doc);
+    const updated: StoredDocument = { ...doc, content: newContent };
+    await upsertDocument(updated);
     return {
       content: [
         { type: "text", text: `Dokument "${doc.filename}" wurde aktualisiert (${newContent.length} Zeichen).` },
       ],
-      structuredContent: { action: "edited", ...docSummary(doc), content: doc.content },
+      structuredContent: { action: "edited", ...docSummary(updated), content: updated.content },
     };
   },
 );
@@ -133,12 +135,12 @@ registerAppTool(
     _meta: ui,
   },
   async ({ id }) => {
-    const doc = documents.get(id);
+    const doc = getDocument(id);
     if (!doc) {
       return { content: [{ type: "text", text: `Dokument ${id} nicht gefunden.` }], isError: true };
     }
-    documents.delete(id);
-    const list = [...documents.values()].map(docSummary);
+    await deleteDocument(id);
+    const list = listDocuments().map(docSummary);
     return {
       content: [{ type: "text", text: `Dokument "${doc.filename}" wurde gelöscht.` }],
       structuredContent: { action: "list", documents: list },
@@ -179,6 +181,7 @@ expressApp.post("/mcp", async (req, res) => {
 });
 
 const PORT = 3901;
+await loadStore();
 expressApp.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}/mcp`);
 });
