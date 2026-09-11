@@ -33,7 +33,7 @@ Fehlfunktion.
 │  Control Plane           │       │  Data Plane               │
 │  server.ts (Port 3901)   │       │  dataplane.ts (Port 3902) │
 │  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (PUT/GET)      │
-│  13 öffentliche Tools    │       │  keine MCP-Tools, kein     │
+│  15 öffentliche Tools    │       │  keine MCP-Tools, kein     │
 │  Business-/Sicherheits-  │       │  Audit, keine Business-    │
 │  logik, Audit-Aufrufe    │       │  logik — Staging-Write,    │
 │                           │       │  Download-Read, /healthz  │
@@ -126,7 +126,13 @@ die Data Plane `404` bzw. `410`.
 per Definition `true` (das Tool antwortet gerade), `data_plane_reachable`
 prüft `GET /healthz` auf der Data Plane (2 s Timeout), `staging_dir_writable`/
 `files_dir_writable` prüfen per `fs.access(dir, W_OK)` ohne eine Probe-Datei
-zu hinterlassen. Im `hub`-Audit-Modus meldet das Tool zusätzlich, **ob**
+zu hinterlassen. `storage` (seit 2026-09-11: `file_count`, `total_bytes`,
+`staging_file_count`, aus `getStorageStats()` in `store.ts`) gibt einem
+Client den aktuellen Verbrauch, ohne dafür `rheinagent_file_list`
+komplett durchpaginieren zu müssen — `file_count`/`total_bytes` zählen
+auch gerade `pendingDelete`-Dateien mit, deren Bytes bis zum tatsächlichen
+`delete_apply` noch belegt sind. Im `hub`-Audit-Modus meldet das Tool
+zusätzlich, **ob**
 `RA_AUDIT_ENDPOINT`/`RA_AUDIT_SERVICE_ID`/`RA_AUDIT_CREDENTIAL_PATH` gesetzt
 sind (nie die Werte selbst) sowie `hub_endpoint_reachable` — ein bewusst
 protokoll-loser Best-Effort-Netzwerk-Check (`checkHubEndpointReachable()`
@@ -137,13 +143,39 @@ sobald irgendeine dieser Prüfungen negativ ausfällt.
 
 ## Processor-Registry
 
-`src/lib/processors.ts` enthält eine feste `Map<string, Processor>`. Ein
+`src/lib/processors.ts` enthält eine feste `Map<string, ProcessorEntry>`. Ein
 Processor ist eine zur Build-Zeit registrierte TypeScript-Funktion, die eine
 lokale Datei liest und ein JSON-Ergebnis zurückgibt — kein Shell-Aufruf, kein
 `eval`, keine vom Client mitgelieferte Logik. Neue Fähigkeiten bedeuten einen
 neuen Registry-Eintrag plus Release, nie eine Laufzeit-Erweiterung durch ein
-MCP-Tool. Aktuell registriert: `text_stats`, `text_uppercase` (beide nur für
-Text-Dokumente, siehe [SECURITY.md](SECURITY.md) zur MIME-Kategorisierung).
+MCP-Tool. Jeder Eintrag deklariert außerdem seine
+`supportedMimeCategories` — `rheinagent_file_process_prepare` prüft das
+**vor** dem Anlegen eines Jobs (`processorSupportsMimeCategory()`), sodass
+eine falsche Kombination (z. B. `text_stats` gegen eine PDF) sofort mit
+einer klaren Fehlermeldung abgelehnt wird, statt erst nach einem echten
+`process_apply`-Versuch mit `state: "failed"` zu enden. Der
+Laufzeit-Check pro Processor-Funktion bleibt zusätzlich als Verteidigung
+in der Tiefe bestehen.
+
+Aktuell registriert:
+
+| Processor | `mime_category` | Ergebnis |
+|---|---|---|
+| `text_stats` | text | `line_count`, `word_count`, `char_count` |
+| `text_uppercase` | text | `transformed_text` (kompletter Inhalt, Großbuchstaben) |
+| `image_metadata` | image | `format` (`png`/`jpeg`), `width`, `height`, `size_bytes` — Dimensionen per Hand aus PNG-IHDR bzw. JPEG-SOF-Markern geparst, **keine** Bildbibliothek (kein `sharp`/`jimp`: nativ bzw. für reines Header-Lesen unnötig) |
+| `pdf_metadata` | pdf | `page_count`, `pdf_format_version`, `title`, `author` (letztere `null`, falls nicht gesetzt) |
+| `pdf_extract_text` | pdf | `extracted_text` (auf 64 KiB gekappt, wie `INLINE_CONTENT_MAX_BYTES` an anderer Stelle — Ergebnis fließt über `result_get` durch MCP-JSON zurück), `page_count`, `truncated` |
+
+`pdf_metadata`/`pdf_extract_text` nutzen `pdfjs-dist` (Mozillas eigener
+PDF.js-Kern) — bewusst **nicht** das populärere `pdf-parse`, das
+`@napi-rs/canvas` (natives Rust-Addon) als Hard-Dependency zieht, unnötig
+für reine Textextraktion und auf einem arm64-Pi unerwünscht. `pdfjs-dist`
+selbst hat null Laufzeit-Abhängigkeiten. Läuft ohne `Worker` (kein
+`workerSrc`/`workerPort` konfiguriert — pdf.js erkennt Node selbst und
+fällt automatisch auf synchrones Parsing im Hauptthread zurück; für einen
+kurzlebigen Extraktions-Call pro Job wäre ein `worker_threads`-Worker nur
+Overhead).
 
 ## Öffentliche Tool-Verträge
 
@@ -198,18 +230,32 @@ erst über einen `rate limit exceeded`-Fehler zu lernen.
 | `rheinagent_file_upload_finalize` | `upload_id` | `FileRecordSchema` | — | critical |
 | `rheinagent_file_list` | `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
+| `rheinagent_file_rename` | `file_id`, `new_filename` | `FileRecordSchema` | idempotent | write |
 | `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
 | `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |
 | `rheinagent_file_job_get` | `job_id` | `JobRecordSchema` | readOnly, idempotent | read |
+| `rheinagent_file_job_list` | `file_id?`, `cursor?`, `limit?` | `JobListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_result_get` | `job_id` | `JobResultEnvelopeSchema` | readOnly, idempotent | read |
 | `rheinagent_file_delete_prepare` | `file_id` | `DeleteTicketResultSchema` | — | write |
 | `rheinagent_file_delete_apply` | `delete_token` | `FileListResultSchema` (verbleibende Dateien) | **destructiveHint: true**, verlangt Elicitation-Bestätigung | critical |
 
 `rheinagent_file_list` ist cursor-paginiert (`next_cursor` in der Antwort,
 als `cursor` beim nächsten Aufruf mitgeben) — wächst dadurch nicht
-unbegrenzt durch MCP-JSON, selbst bei vielen akzeptierten Dateien. Details
-zu Rate-Limiting und der Löschbestätigung: [SECURITY.md](SECURITY.md).
+unbegrenzt durch MCP-JSON, selbst bei vielen akzeptierten Dateien.
+`rheinagent_file_job_list` folgt demselben Muster (optional zusätzlich nach
+`file_id` gefiltert) — ohne dieses Tool gab es keinen Weg zurück, wenn eine
+`job_id` verloren ging. Details zu Rate-Limiting und der Löschbestätigung:
+[SECURITY.md](SECURITY.md).
+
+`rheinagent_file_rename` ändert ausschließlich `filename` — `file_id`,
+Bytes, `sha256` und `mime_category` bleiben unverändert. Der neue Dateiname
+muss weiterhin auf dieselbe `mime_category` klassifizieren wie die bereits
+per Magic-Bytes validierten Bytes (`classifyExtension()` in
+`security.ts`); ein Rename, der die effektive Kategorie ändern würde (z. B.
+eine als `text` validierte Datei auf `.pdf` umbenennen), wird abgelehnt —
+sonst könnte ein Rename die Extension/Magic-Byte-Konsistenzprüfung aus
+`upload_finalize` im Nachhinein unterlaufen.
 
 ## Audit-/Release-Grenze
 

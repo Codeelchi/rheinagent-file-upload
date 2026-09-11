@@ -25,6 +25,8 @@ export const JobIdField = z.string().regex(idPattern(ID_PREFIXES.job), "must be 
 export const UploadIdField = z.string().regex(idPattern(ID_PREFIXES.upload), "must be an upload_id previously returned by this server");
 export const DeleteTokenField = z.string().regex(idPattern(ID_PREFIXES.delete), "must be a delete_token previously returned by this server");
 
+const MimeCategorySchema = z.enum(["text", "pdf", "image", "archive", "unknown"]);
+
 // Wire shapes are deliberately snake_case throughout — matching every tool
 // *input* field (file_id, declared_size_bytes, processor_id, delete_token,
 // ...) and the other result schemas below. The internal TypeScript types in
@@ -37,7 +39,7 @@ export const FileRecordSchema = z.object({
   file_id: z.string(),
   filename: z.string(),
   size_bytes: z.number().int().nonnegative(),
-  mime_category: z.enum(["text", "pdf", "image", "archive", "unknown"]),
+  mime_category: MimeCategorySchema,
   sha256: z.string(),
   created_at: z.string(),
   pending_delete: z.boolean(),
@@ -70,7 +72,7 @@ export const CapabilitiesSchema = z.object({
       critical: z.number().int().positive(),
     }),
   }),
-  processors: z.array(z.string()),
+  processors: z.array(z.object({ id: z.string(), supported_mime_categories: z.array(MimeCategorySchema) })),
   // Redundant with the server's initialize-time `instructions` (see
   // server.ts) on purpose: some MCP clients don't forward `instructions`
   // into the model's context, but a tool explicitly called and its result
@@ -98,6 +100,11 @@ export const JobResultEnvelopeSchema = z.object({
   result: z.record(z.string(), z.unknown()),
 });
 
+export const JobListResultSchema = z.object({
+  jobs: z.array(JobRecordSchema),
+  next_cursor: z.string().optional(),
+});
+
 export const DeleteTicketResultSchema = z.object({
   delete_token: z.string(),
   file_id: z.string(),
@@ -117,6 +124,11 @@ export const HealthSchema = z.object({
   data_plane_reachable: z.boolean(),
   staging_dir_writable: z.boolean(),
   files_dir_writable: z.boolean(),
+  storage: z.object({
+    file_count: z.number().int().nonnegative(),
+    total_bytes: z.number().int().nonnegative(),
+    staging_file_count: z.number().int().nonnegative(),
+  }),
   audit: z.object({
     mode: z.enum(["off", "hub"]),
     endpoint_configured: z.boolean().optional(),

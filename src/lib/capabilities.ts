@@ -1,5 +1,5 @@
 import { MAX_UPLOAD_BYTES } from "./security.js";
-import { listProcessorIds } from "./processors.js";
+import { listProcessorsWithCategories } from "./processors.js";
 import { loadAuditConfig } from "./audit.js";
 import { WINDOW_MS, LIMITS } from "./rateLimit.js";
 
@@ -22,8 +22,8 @@ export const USAGE_STEPS: readonly string[] = [
   "All ids (file_id, job_id, upload_id, delete_token, download_token) are opaque strings returned by this server — never construct or guess one.",
   "Discover: call rheinagent_file_capabilities_get once for limits and valid processor_id values; call rheinagent_file_health_get before heavy work if a previous call failed unexpectedly.",
   "Upload: rheinagent_file_upload_prepare -> PUT the raw bytes to the returned upload_url (not through MCP JSON) -> rheinagent_file_upload_finalize.",
-  "Inspect: rheinagent_file_list / rheinagent_file_get. Small text files come back inline from rheinagent_file_get; anything else needs rheinagent_file_download_prepare -> GET the returned download_url.",
-  "Process: rheinagent_file_process_prepare (pick processor_id from capabilities) -> rheinagent_file_process_apply -> rheinagent_file_job_get / rheinagent_file_result_get.",
+  "Inspect: rheinagent_file_list / rheinagent_file_get. Small text files come back inline from rheinagent_file_get; anything else needs rheinagent_file_download_prepare -> GET the returned download_url. rheinagent_file_rename changes only the display filename, never mime_category or bytes.",
+  "Process: rheinagent_file_process_prepare (pick a processor_id from capabilities.processors whose supported_mime_categories includes the file's mime_category) -> rheinagent_file_process_apply -> rheinagent_file_job_get / rheinagent_file_result_get. Use rheinagent_file_job_list to find jobs again if a job_id was lost.",
   "Delete: rheinagent_file_delete_prepare -> rheinagent_file_delete_apply. The apply step asks for an explicit confirmation round-trip (elicitation) before it actually deletes anything.",
   "Rate limits apply per tool (see capabilities.limits.rate_limit_window_ms / rate_limits_per_window) — an isError result mentioning 'rate limit exceeded' means back off and retry after the window, not a permanent failure.",
 ];
@@ -43,7 +43,7 @@ export function getCapabilities() {
       rate_limit_window_ms: WINDOW_MS,
       rate_limits_per_window: { ...LIMITS },
     },
-    processors: listProcessorIds(),
+    processors: listProcessorsWithCategories(),
     usage: [...USAGE_STEPS],
   };
 }

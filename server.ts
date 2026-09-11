@@ -31,15 +31,18 @@ import {
   applyDelete,
   createJob,
   getJob,
+  listJobsPage,
   updateJob,
   writeJobResult,
   readJobResult,
   checkStagingDirWritable,
   checkFilesDirWritable,
   sweepOrphanedStaging,
+  renameFile,
+  getStorageStats,
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
-import { getProcessor, listProcessorIds } from "./src/lib/processors.js";
+import { getProcessor, listProcessorIds, processorSupportsMimeCategory } from "./src/lib/processors.js";
 import { checkRateLimit, RateLimitExceededError, type WeightClass } from "./src/lib/rateLimit.js";
 import { createLogger } from "./src/lib/logging.js";
 import {
@@ -53,6 +56,7 @@ import {
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
   HealthSchema,
+  JobListResultSchema,
   FileIdField,
   JobIdField,
   UploadIdField,
@@ -122,7 +126,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Health / doctor check",
       description:
-        "Checks control/data-plane reachability, staging/files directory writability, and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
+        "Checks control/data-plane reachability, staging/files directory writability, current storage usage (file count, total bytes, staged-file count), and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
       inputSchema: z.object({}),
       outputSchema: HealthSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -135,9 +139,10 @@ function registerTools(server: McpServer): void {
         .then((res) => res.ok)
         .catch(() => false);
 
-      const [stagingWritable, filesWritable] = await Promise.all([
+      const [stagingWritable, filesWritable, storage] = await Promise.all([
         checkStagingDirWritable(),
         checkFilesDirWritable(),
+        getStorageStats(),
       ]);
 
       const auditCfg = loadAuditConfig();
@@ -162,6 +167,11 @@ function registerTools(server: McpServer): void {
         data_plane_reachable: dataPlaneReachable,
         staging_dir_writable: stagingWritable,
         files_dir_writable: filesWritable,
+        storage: {
+          file_count: storage.fileCount,
+          total_bytes: storage.totalBytes,
+          staging_file_count: storage.stagingFileCount,
+        },
         audit,
       };
       await auditInvocation("rheinagent_file_health_get", { status: body.status });
@@ -307,6 +317,30 @@ function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "rheinagent_file_rename",
+    {
+      title: "Rename a file",
+      description:
+        "Changes a file's display filename. The new filename's extension must still classify to the same mime_category as the file's already-validated bytes (e.g. a file accepted as \"text\" can be renamed between .txt/.md/.csv/.json, but never to .pdf) — a rename that would change the effective category is rejected.",
+      inputSchema: z.object({ file_id: FileIdField, new_filename: z.string().min(1) }),
+      outputSchema: FileRecordSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_rename", "write", async ({ file_id, new_filename }) => {
+      try {
+        const record = await renameFile(file_id, new_filename);
+        await auditInvocation("rheinagent_file_rename", { mime_category: record.mimeCategory });
+        return {
+          content: [{ type: "text", text: `${file_id} renamed to "${record.filename}".` }],
+          structuredContent: toWireFile(record),
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
     "rheinagent_file_download_prepare",
     {
       title: "Prepare a file download",
@@ -348,6 +382,15 @@ function registerTools(server: McpServer): void {
       if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
       if (!getProcessor(processor_id)) {
         return { content: [{ type: "text", text: `unknown processor_id. Registered: ${listProcessorIds().join(", ")}` }], isError: true };
+      }
+      if (!processorSupportsMimeCategory(processor_id, record.mimeCategory)) {
+        return {
+          content: [{
+            type: "text",
+            text: `processor "${processor_id}" does not support mime_category "${record.mimeCategory}" — call rheinagent_file_capabilities_get to see each processor's supported_mime_categories`,
+          }],
+          isError: true,
+        };
       }
       const job = await createJob(file_id, processor_id);
       await auditInvocation("rheinagent_file_process_prepare", { processor_id });
@@ -412,6 +455,24 @@ function registerTools(server: McpServer): void {
       if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
       await auditInvocation("rheinagent_file_job_get");
       return { content: [{ type: "text", text: `job ${job_id}: ${job.state}` }], structuredContent: toWireJob(job) };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_job_list",
+    {
+      title: "List processing jobs",
+      description:
+        "Lists processing jobs, optionally filtered to one file_id, paginated via cursor/next_cursor. Use this to find a job_id again if it was lost, or to see every job ever run against a file.",
+      inputSchema: z.object({ file_id: FileIdField.optional(), cursor: z.string().optional(), limit: z.number().int().positive().max(200).optional() }),
+      outputSchema: JobListResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_job_list", "read", async ({ file_id, cursor, limit }) => {
+      const page = await listJobsPage(file_id, cursor, limit);
+      await auditInvocation("rheinagent_file_job_list", { result_count: page.jobs.length });
+      const body = { jobs: page.jobs.map(toWireJob), next_cursor: page.nextCursor };
+      return { content: [{ type: "text", text: `${page.jobs.length} job(s).` }], structuredContent: body };
     }),
   );
 

@@ -131,7 +131,25 @@ Operationen jenseits der in dieser Liste beschriebenen ausführt.
 `rheinagent_file_process_apply` kann ausschließlich einen der in
 `src/lib/processors.ts` fest registrierten Processor-IDs aufrufen — der
 `processor_id`-Parameter wählt aus einer Allowlist, führt keinen beliebigen
-Code aus.
+Code aus. Ein `process_prepare` mit einem `processor_id`/`mime_category`-
+Mismatch (z. B. `text_stats` gegen eine PDF) wird seit 2026-09-11 schon vor
+dem Anlegen des Jobs abgelehnt (`processorSupportsMimeCategory()`), nicht
+erst nach einem realen, fehlgeschlagenen `process_apply`.
+
+## Abhängigkeits-/Supply-Chain-Entscheidung: `pdfjs-dist`
+
+Die einzige nicht-triviale Laufzeit-Abhängigkeit dieses Produkts jenseits
+von `express`/`zod`/dem MCP-SDK ist `pdfjs-dist` (Mozillas PDF.js-Kern) für
+`pdf_metadata`/`pdf_extract_text`. Bewusst **nicht** das populärere
+`pdf-parse` verwendet, das `@napi-rs/canvas` — ein natives Rust-Addon —
+als Hard-Dependency zieht, unnötig für reine Textextraktion und auf einem
+arm64-On-Prem-Host (`berry`) sowohl größere Angriffsfläche (kompilierter
+Code statt reinem JS) als auch ein Cross-Compile-/Prebuilt-Binary-Risiko.
+`pdfjs-dist` selbst hat **null** eigene Laufzeit-Abhängigkeiten. Bild-
+Metadaten (`image_metadata`) brauchen dagegen gar keine Bibliothek — PNG-/
+JPEG-Dimensionen werden per Hand aus den jeweiligen Headern gelesen
+(`src/lib/processors.ts`), genau wie die Magic-Byte-Erkennung in
+`security.ts`.
 
 ## Audit-Schreib-Sicherheit
 

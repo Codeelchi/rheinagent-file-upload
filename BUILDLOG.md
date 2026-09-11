@@ -2,6 +2,81 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — PDF/Image-Processoren, Job-Listing, Storage-Stats, Rename
+
+Auftrag: weitere Verbesserungen für die *Funktionen* des MCP (nicht
+Infrastruktur/Security wie die letzten Runden). Fünf vorgeschlagene Punkte
+vollständig umgesetzt.
+
+**1. PDF/Image-Processoren.** `pdf`/`image` waren erlaubte
+`mime_category`-Werte ohne jeden Processor — größte funktionale Lücke.
+
+- `image_metadata` (`src/lib/processors.ts`): PNG-/JPEG-Dimensionen per
+  Hand geparst (`parsePngDimensions()`: feste Offsets im IHDR-Chunk;
+  `parseJpegDimensions()`: Marker-Scan bis zum SOF0–SOF15-Segment,
+  DHT/JPG/DAC ausgenommen) — bewusst keine Bildbibliothek. Getestet gegen
+  echte, in Node synthetisch erzeugte PNG/JPEG-Bytes: 64×32 PNG und
+  100×50 JPEG korrekt erkannt.
+- `pdf_metadata`/`pdf_extract_text`: neue Abhängigkeit `pdfjs-dist`
+  (Mozillas PDF.js-Kern, null eigene Laufzeit-Abhängigkeiten) — bewusst
+  **nicht** `pdf-parse`, das `@napi-rs/canvas` (natives Rust-Addon,
+  unnötig für Textextraktion, auf arm64 unerwünscht) als Hard-Dependency
+  zieht. Läuft ohne Worker (`workerSrc` nicht gesetzt — pdf.js erkennt
+  Node und parst synchron im Hauptthread). Getestet gegen ein
+  handgeschriebenes minimales PDF: Textextraktion und Metadaten
+  (`page_count`, `pdf_format_version`) korrekt.
+- Extrahierter Text ist auf 64 KiB gekappt (`PDF_TEXT_MAX_CHARS`, analog zu
+  `INLINE_CONTENT_MAX_BYTES`) — das Ergebnis fließt über `result_get` durch
+  MCP-JSON zurück, kein Freibrief für beliebig große Payloads.
+
+**2. Prepare-Zeit-Validierung `processor_id` vs. `mime_category`.**
+Processor-Registry-Refactor: jeder Eintrag deklariert jetzt
+`supportedMimeCategories` (`ProcessorEntry`, `processorSupportsMimeCategory()`).
+`rheinagent_file_process_prepare` lehnt eine falsche Kombination (z. B.
+`text_stats` gegen eine PDF) jetzt sofort ab, statt einen Job anzulegen,
+der erst bei `process_apply` mit `state: "failed"` endet. Live verifiziert:
+`text_stats` gegen eine hochgeladene PDF → klare Fehlermeldung direkt bei
+`process_prepare`, kein Job angelegt.
+
+**3. `rheinagent_file_job_list`** (neu) — Pendant zu `rheinagent_file_list`
+für Jobs (`listJobsPage()` in `store.ts`), optional nach `file_id`
+gefiltert, cursor-paginiert nach demselben Muster. Live verifiziert:
+gefiltert nach `file_id` liefert genau die zwei zu dieser Datei gehörigen
+Jobs.
+
+**4. Storage-Stats in `rheinagent_file_health_get`.** Neues
+`storage`-Feld (`file_count`, `total_bytes`, `staging_file_count`) aus
+`getStorageStats()` — zählt auch `pendingDelete`-Dateien mit (Bytes bis
+`delete_apply` noch belegt). Live verifiziert nach 3 Uploads:
+`file_count: 3, total_bytes: 586`.
+
+**5. `rheinagent_file_rename`** (neu) — ändert nur `filename`; `file_id`,
+Bytes, `sha256`, `mime_category` bleiben unverändert. `renameFile()` in
+`store.ts` lehnt einen Rename ab, der die effektive `mime_category` ändern
+würde (z. B. `.txt` → `.pdf`) — sonst ließe sich die Extension/Magic-Byte-
+Konsistenzprüfung aus `upload_finalize` nachträglich unterlaufen. Live
+verifiziert: Rename einer PDF auf einen neuen `.pdf`-Namen erfolgreich,
+Rename derselben PDF auf einen `.txt`-Namen klar abgelehnt.
+
+**Zusätzlich:** `capabilities.processors` liefert jetzt
+`{id, supported_mime_categories}` statt nur IDs (`listProcessorsWithCategories()`)
+— ein Client sieht direkt, welcher Processor zu welcher Datei passt.
+`USAGE_STEPS` entsprechend aktualisiert (job_list, rename erwähnt).
+
+**Getestet:** Vollständiger Live-E2E-Durchlauf gegen beide laufenden
+Prozesse (Upload Text/PDF/PNG → Mismatch-Ablehnung → alle 5 Processor →
+job_list → rename erlaubt/abgelehnt → health_get-Storage → capabilities_get-
+Schema). 20 neue automatisierte Tests (`test/processors.test.ts` neu, 10
+neue in `test/store.test.ts`) — jetzt **15 Tools, 5 Processor, 64
+automatisierte Tests, alle grün**; `npm run check` fehlerfrei.
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (Processor-Registry-Tabelle,
+Tool-Vertragstabelle, Health/Doctor-Storage-Absatz, Rename-Absatz,
+Diagramm 13→15 Tools), `docs/SECURITY.md` (neue Abschnitte
+"Abhängigkeits-/Supply-Chain-Entscheidung: pdfjs-dist", Prepare-Zeit-
+Mime-Check-Ergänzung), `README.md`, `docs/VERSIONING.md`,
+`docs/HANDOFF.md`.
+
 ## 2026-09-11 — Cascade Delete, Staging-Reaper, CORS entfernt
 
 Fortsetzung des letzten Verbesserungsvorschlags — drei konkrete Funde aus

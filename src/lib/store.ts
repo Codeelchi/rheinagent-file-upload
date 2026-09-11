@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { JsonIndex } from "./jsonIndex.js";
 import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
-import { safeJoin, assertNotSymlink, type MimeCategory } from "./security.js";
+import { safeJoin, assertNotSymlink, classifyExtension, type MimeCategory } from "./security.js";
 
 const DATA_DIR = path.join(import.meta.dirname, "..", "..", "data");
 const STAGING_DIR = path.join(DATA_DIR, "staging");
@@ -227,6 +227,45 @@ export async function getFile(fileId: string): Promise<FileRecord | undefined> {
 }
 
 /**
+ * Renames a file's display name in place — file_id, bytes, sha256, and
+ * mime_category never change. `new_filename`'s extension must still
+ * classify to the *same* mime_category as the already magic-byte-verified
+ * bytes on disk: renaming validated `.txt` bytes to `report.pdf` would
+ * silently relabel content that was never checked as PDF, undermining the
+ * upload_finalize sniff/extension consistency check for anything that
+ * later trusts mime_category (e.g. which processor_id is offered for this
+ * file). A rename that would change the effective category is rejected,
+ * not silently coerced.
+ */
+export async function renameFile(fileId: string, newFilename: string): Promise<FileRecord> {
+  const record = await files.get(fileId);
+  if (!record || record.pendingDelete) throw new Error("file not found");
+  const newCategory = classifyExtension(newFilename);
+  if (newCategory === null) {
+    throw new Error(`extension of "${newFilename}" is not allowed`);
+  }
+  if (newCategory !== record.mimeCategory) {
+    throw new Error(
+      `renaming to "${newFilename}" would change mime_category from "${record.mimeCategory}" to "${newCategory}" — not allowed, the underlying bytes were only ever validated as "${record.mimeCategory}"`,
+    );
+  }
+  const updated: FileRecord = { ...record, filename: newFilename };
+  await files.set(fileId, updated);
+  return updated;
+}
+
+/** Live disk-usage snapshot for the health tool — counts every accepted
+ * file (including ones currently `pendingDelete`, since their bytes are
+ * still on disk until `delete_apply` actually runs) plus how many bytes
+ * are currently sitting in staging (in-flight or not-yet-swept uploads). */
+export async function getStorageStats(): Promise<{ fileCount: number; totalBytes: number; stagingFileCount: number }> {
+  const all = await files.values();
+  const totalBytes = all.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const staged = await fs.readdir(STAGING_DIR).catch(() => [] as string[]);
+  return { fileCount: all.length, totalBytes, stagingFileCount: staged.length };
+}
+
+/**
  * Download tickets gate the data-plane GET endpoint: a client must first
  * call the control-plane `rheinagent_file_download_prepare` tool (which
  * checks the file actually exists and isn't pending-delete) to get a
@@ -317,6 +356,32 @@ export async function createJob(fileId: string, processorId: string): Promise<Jo
 export async function getJob(jobId: string): Promise<JobRecord | undefined> {
   assertOpaqueId(jobId);
   return jobs.get(jobId);
+}
+
+/**
+ * Cursor-paginated job listing, optionally scoped to one file_id — the
+ * `rheinagent_file_list` counterpart for jobs. Without this, losing a
+ * job_id (or simply wanting "what jobs exist for this file") had no
+ * recovery path other than re-running rheinagent_file_process_prepare and
+ * creating a duplicate job. Same sort/pagination shape as
+ * `listFilesPage()` (createdAt, then jobId as tiebreaker) for consistency.
+ */
+export async function listJobsPage(
+  fileId?: string,
+  cursor?: string,
+  limit: number = DEFAULT_PAGE_SIZE,
+): Promise<{ jobs: JobRecord[]; nextCursor?: string }> {
+  let all = await jobs.values();
+  if (fileId) all = all.filter((j) => j.fileId === fileId);
+  all = all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.jobId.localeCompare(b.jobId));
+  let startIndex = 0;
+  if (cursor) {
+    const idx = all.findIndex((j) => j.jobId === cursor);
+    startIndex = idx >= 0 ? idx + 1 : 0;
+  }
+  const page = all.slice(startIndex, startIndex + limit);
+  const nextCursor = startIndex + limit < all.length ? page[page.length - 1]?.jobId : undefined;
+  return { jobs: page, nextCursor };
 }
 
 export async function updateJob(jobId: string, patch: Partial<JobRecord>): Promise<void> {

@@ -12,7 +12,10 @@ und kontrollierte serverseitige Dateiverarbeitung.
 ## Architekturprinzipien
 
 - Kein beliebiges Shell-/Filesystem-/Executor-Tool — nur fest registrierte,
-  serverseitige Processor (`src/lib/processors.ts`)
+  serverseitige Processor (`src/lib/processors.ts`): `text_stats`/
+  `text_uppercase` (Text), `image_metadata` (PNG/JPEG, ohne Bildbibliothek
+  — Dimensionen selbst geparst), `pdf_metadata`/`pdf_extract_text` (PDF,
+  via `pdfjs-dist`, bewusst ohne dessen native `canvas`-Abhängigkeit)
 - MCP-Tools arbeiten ausschließlich mit opaken `file_id`/`job_id`/`upload_id`
   (nie mit Dateinamen oder Pfaden als Identifikator)
 - Große Binärdaten laufen nie als Base64 durch MCP-JSON — Upload/Finalize
@@ -50,10 +53,12 @@ Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/
 | `rheinagent_file_upload_finalize` | Staged Bytes validieren und final übernehmen |
 | `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten) |
 | `rheinagent_file_get` | Metadaten (und kleine Text-Inhalte) abrufen |
+| `rheinagent_file_rename` | Anzeigenamen ändern (nie Bytes/`mime_category`) |
 | `rheinagent_file_download_prepare` | `download_token` + Data-Plane-URL für große/binäre Dateien erhalten |
 | `rheinagent_file_process_prepare` | Verarbeitungsjob für einen registrierten Processor anlegen |
 | `rheinagent_file_process_apply` | Job ausführen, Ergebnis atomar speichern |
 | `rheinagent_file_job_get` | Job-Status abrufen |
+| `rheinagent_file_job_list` | Jobs auflisten, optional nach `file_id` gefiltert |
 | `rheinagent_file_result_get` | Job-Ergebnis abrufen |
 | `rheinagent_file_delete_prepare` | Löschung vorbereiten (`delete_token`) |
 | `rheinagent_file_delete_apply` | Löschung mit `delete_token` final ausführen |

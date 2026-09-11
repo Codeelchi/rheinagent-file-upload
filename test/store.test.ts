@@ -17,8 +17,11 @@ import {
   sweepOrphanedStaging,
   createJob,
   getJob,
+  listJobsPage,
   writeJobResult,
   readJobResult,
+  renameFile,
+  getStorageStats,
 } from "../src/lib/store.js";
 import { sha256Hex } from "../src/lib/security.js";
 
@@ -143,6 +146,98 @@ test("sweepOrphanedStaging keeps staged bytes for a still-valid pending upload",
   await sweepOrphanedStaging();
   await assert.doesNotReject(() => fs.access(staged), "not expired yet, must not be swept");
 
+  await consumePendingUpload(pending.uploadId);
+  await fs.unlink(staged).catch(() => {});
+});
+
+// --- job listing ---
+
+test("listJobsPage lists jobs across files and filters by file_id", async () => {
+  const a = await acceptTestFile("store-test-joblist-a.txt", "aaa");
+  const b = await acceptTestFile("store-test-joblist-b.txt", "bbb");
+  const jobA1 = await createJob(a.fileId, "text_stats");
+  const jobA2 = await createJob(a.fileId, "text_uppercase");
+  const jobB1 = await createJob(b.fileId, "text_stats");
+
+  const allForA = await listJobsPage(a.fileId);
+  const idsForA = allForA.jobs.map((j) => j.jobId).sort();
+  assert.deepEqual(idsForA, [jobA1.jobId, jobA2.jobId].sort());
+
+  const unfiltered = await listJobsPage();
+  const unfilteredIds = unfiltered.jobs.map((j) => j.jobId);
+  assert.ok(unfilteredIds.includes(jobA1.jobId));
+  assert.ok(unfilteredIds.includes(jobB1.jobId));
+
+  // cleanup
+  for (const f of [a, b]) {
+    const t = await createDeleteTicket(f.fileId);
+    await applyDelete(t.deleteToken);
+  }
+});
+
+test("listJobsPage paginates via cursor/limit like listFilesPage", async () => {
+  const f = await acceptTestFile("store-test-joblist-page.txt", "x");
+  const created = [];
+  for (let i = 0; i < 3; i++) created.push(await createJob(f.fileId, "text_stats"));
+
+  const page1 = await listJobsPage(f.fileId, undefined, 2);
+  assert.equal(page1.jobs.length, 2);
+  assert.ok(page1.nextCursor);
+
+  const page2 = await listJobsPage(f.fileId, page1.nextCursor, 2);
+  assert.equal(page2.jobs.length, 1);
+  assert.equal(page2.nextCursor, undefined);
+
+  const t = await createDeleteTicket(f.fileId);
+  await applyDelete(t.deleteToken);
+});
+
+// --- rename: filename only, never bytes/mime_category ---
+
+test("renameFile changes filename and preserves file_id/sha256/mime_category", async () => {
+  const record = await acceptTestFile("store-test-rename-a.txt", "content");
+  const renamed = await renameFile(record.fileId, "store-test-rename-a-v2.txt");
+  assert.equal(renamed.fileId, record.fileId);
+  assert.equal(renamed.sha256, record.sha256);
+  assert.equal(renamed.mimeCategory, "text");
+  assert.equal(renamed.filename, "store-test-rename-a-v2.txt");
+
+  const t = await createDeleteTicket(record.fileId);
+  await applyDelete(t.deleteToken);
+});
+
+test("renameFile rejects a new filename that would change mime_category", async () => {
+  const record = await acceptTestFile("store-test-rename-b.txt", "content");
+  await assert.rejects(() => renameFile(record.fileId, "store-test-rename-b.pdf"), /would change mime_category/);
+
+  const t = await createDeleteTicket(record.fileId);
+  await applyDelete(t.deleteToken);
+});
+
+test("renameFile rejects an unknown file_id", async () => {
+  await ensureDirs();
+  await assert.rejects(() => renameFile("file_00000000-0000-0000-0000-000000000000", "x.txt"), /file not found/);
+});
+
+// --- storage stats (health tool) ---
+
+test("getStorageStats reflects accepted files and staged bytes", async () => {
+  await ensureDirs();
+  const before = await getStorageStats();
+
+  const record = await acceptTestFile("store-test-storage.txt", "12345");
+  const pending = await createPendingUpload("store-test-storage-staged.txt", 3);
+  const staged = await stagingPath(pending.uploadId);
+  await fs.writeFile(staged, "abc", "utf-8");
+
+  const after = await getStorageStats();
+  assert.equal(after.fileCount, before.fileCount + 1);
+  assert.equal(after.totalBytes, before.totalBytes + 5);
+  assert.equal(after.stagingFileCount, before.stagingFileCount + 1);
+
+  // cleanup
+  const t = await createDeleteTicket(record.fileId);
+  await applyDelete(t.deleteToken);
   await consumePendingUpload(pending.uploadId);
   await fs.unlink(staged).catch(() => {});
 });

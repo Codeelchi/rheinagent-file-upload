@@ -27,10 +27,12 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   dazu keinen Zugriff auf eine laufende Hub-Instanz (kein `rheinagent-audit`-
   Profil in den verfügbaren MCP-Connectoren) und hat stattdessen den
   nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
-- Vollständiger aktueller Funktionsstand: alle 13 Tools implementiert und
-  end-to-end verifiziert (Upload/Download/Process/Delete-Flow, Health/Doctor,
-  Pagination, Elicitation-Bestätigung, Legacy- und moderner
-  `2026-07-28`-Protokollpfad). Details: `BUILDLOG.md` (neuester Eintrag oben).
+- Vollständiger aktueller Funktionsstand: alle 15 Tools implementiert und
+  end-to-end verifiziert (Upload/Download/Rename/Process/Delete-Flow,
+  Health/Doctor inkl. Storage-Stats, Job-Listing, Pagination,
+  Elicitation-Bestätigung, Legacy- und moderner `2026-07-28`-Protokollpfad).
+  5 Processor registriert (Text/PDF/Image), Details: `BUILDLOG.md`
+  (neuester Eintrag oben).
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
 
@@ -118,6 +120,41 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **PDF/Image-Processoren, Prepare-Zeit-Mime-Check, Job-Listing, Storage-
+  Stats, Rename.** Fünf funktionale Verbesserungen auf einmal umgesetzt:
+  1. **PDF/Image-Processoren** — `pdf` und `image` waren erlaubte
+     `mime_category`-Werte, aber ohne jeden Processor. Neu: `image_metadata`
+     (PNG/JPEG-Dimensionen, per Hand geparst, keine Bildbibliothek),
+     `pdf_metadata` + `pdf_extract_text` (via `pdfjs-dist`, bewusst ohne
+     dessen native `@napi-rs/canvas`-Alternative `pdf-parse` — siehe
+     [SECURITY.md](SECURITY.md)). Jetzt 5 Processor statt 2.
+  2. **`process_prepare` prüft `processor_id` gegen `mime_category`
+     vorab** (`processorSupportsMimeCategory()`) — ein Mismatch (z. B.
+     `text_stats` auf eine PDF) wird sofort mit klarer Fehlermeldung
+     abgelehnt, statt erst nach einem echten `process_apply`-Versuch mit
+     `state: "failed"` zu enden.
+  3. **`rheinagent_file_job_list`** (neu) — Pendant zu `rheinagent_file_list`
+     für Jobs, optional nach `file_id` gefiltert, cursor-paginiert. Vorher
+     gab es keinen Weg zurück, wenn eine `job_id` verloren ging.
+  4. **Storage-Stats in `rheinagent_file_health_get`** — `storage.file_count`/
+     `total_bytes`/`staging_file_count`, damit ein Client den aktuellen
+     Verbrauch kennt, ohne `rheinagent_file_list` komplett durchzupaginieren.
+  5. **`rheinagent_file_rename`** (neu) — ändert nur den Anzeigenamen; ein
+     Rename, das die effektive `mime_category` ändern würde (z. B. `.txt`
+     → `.pdf`), wird abgelehnt, damit die Extension/Magic-Byte-Konsistenz
+     aus `upload_finalize` nicht im Nachhinein unterlaufen werden kann.
+  - `capabilities.processors` liefert jetzt `{id, supported_mime_categories}`
+    statt nur IDs — ein Client sieht direkt, welcher Processor zu welcher
+    Datei passt, ohne Trial-and-Error.
+  - Live end-to-end getestet: Upload von Text/PDF/PNG, Mismatch-Ablehnung
+    bei `process_prepare`, alle 5 Processor gegen echte Dateien, `job_list`
+    gefiltert nach `file_id`, Rename (erlaubt + abgelehnt), `health_get`-
+    Storage-Stats, `capabilities_get`-Processor-Schema — alles wie erwartet.
+  - 20 neue automatisierte Tests (`test/processors.test.ts` neu, 10 neue in
+    `test/store.test.ts`) — jetzt **15 Tools, 5 Processor, 64 automatisierte
+    Tests**, `npm run check` fehlerfrei.
+  - Neue Abhängigkeit: `pdfjs-dist` (null eigene Laufzeit-Abhängigkeiten,
+    siehe [SECURITY.md](SECURITY.md) zur Supply-Chain-Begründung).
 - **Cascade Delete, Staging-Reaper, CORS entfernt.** Drei Funde aus einer
   weiteren Codedurchsicht: (1) `delete_apply` löschte Jobs/Ergebnisse der
   gelöschten Datei nicht mit — ein `text_uppercase`-Ergebnis (voller
