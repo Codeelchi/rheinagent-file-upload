@@ -45,8 +45,11 @@ function envInt(name: string, fallback: number): number {
 // Defaults: read tools get the most headroom, write tools less, critical
 // (destructive/irreversible-after-apply) tools the least. All configurable
 // via env so an operator can tune without a code change.
-const WINDOW_MS = envInt("RHEINAGENT_FILE_UPLOAD_RATE_LIMIT_WINDOW_MS", 60_000);
-const LIMITS: Record<WeightClass, number> = {
+// Exported (not just used internally below) so rheinagent_file_capabilities_get
+// can tell a calling LLM client the actual pacing budget up front, instead
+// of it learning the numbers only by tripping RateLimitExceededError.
+export const WINDOW_MS = envInt("RHEINAGENT_FILE_UPLOAD_RATE_LIMIT_WINDOW_MS", 60_000);
+export const LIMITS: Record<WeightClass, number> = {
   read: envInt("RHEINAGENT_FILE_UPLOAD_RATE_LIMIT_READ_PER_WINDOW", 120),
   write: envInt("RHEINAGENT_FILE_UPLOAD_RATE_LIMIT_WRITE_PER_WINDOW", 30),
   critical: envInt("RHEINAGENT_FILE_UPLOAD_RATE_LIMIT_CRITICAL_PER_WINDOW", 15),

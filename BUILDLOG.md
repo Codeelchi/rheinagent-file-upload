@@ -2,6 +2,79 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Tool-Vertrags-Audit + LLM-Erklärbarkeit + Workflow-Script
+
+Auftrag: sicherstellen, dass alle Tools korrekte Beschreibungen/Verträge
+haben, recherchieren, wie ein `capabilities`-Tool einem LLM die Funktionen
+erklären sollte (und ob das umgesetzt werden soll), und weitere
+Verbesserungen für MCP + Workflow vorschlagen.
+
+**Vertrags-Audit-Ergebnis (alle 13 Tools durchgesehen):** Annotations
+(`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`) und
+Rate-Limit-Klassen passten bereits konsistent zum tatsächlichen Verhalten.
+Zwei echte Lücken gefunden und behoben:
+
+1. **Wire-Format-Inkonsistenz.** `FileRecordSchema`/`JobRecordSchema`/
+   `DeleteTicketResultSchema` gaben bisher `camelCase` zurück (direkt aus
+   den internen `store.ts`-Records gespreadet), obwohl jedes Tool-Input-
+   Feld und `UploadPrepareResultSchema`/`DownloadPrepareResultSchema`
+   bereits `snake_case` waren — zwei Konventionen im selben öffentlichen
+   Vertrag. Neuer Mapping-Layer `src/lib/wire.ts`
+   (`toWireFile()`/`toWireJob()`/`toWireDeleteTicket()`); jeder
+   `structuredContent`-Rückgabewert läuft jetzt dadurch. Bewusst als
+   Breaking-Change vor jeder echten Kunden-Integration bereinigt (siehe
+   `docs/VERSIONING.md` Schema-Kompatibilität — genau der richtige
+   Zeitpunkt dafür).
+2. **ID-Eingaben nur lose typisiert.** `file_id`/`job_id`/`upload_id`/
+   `delete_token` waren `z.string()` ohne Formprüfung — eine falsche ID
+   scheiterte dadurch als generischer "internal error in `<tool>`" statt
+   als klare Validierungsmeldung (Ursache: `assertOpaqueId()` wirft erst
+   tief in `store.ts`). Neue Per-Kind-Feldschemas `FileIdField`/
+   `JobIdField`/`UploadIdField`/`DeleteTokenField` (`src/lib/schemas.ts`,
+   gebaut aus neu exportiertem `idPattern()`/`ID_PREFIXES` in
+   `src/lib/ids.ts`) — lehnen jetzt auch eine ID der falschen Art ab (z. B.
+   ein `job_id`-Wert an `file_id` übergeben), nicht nur beliebige Strings.
+
+**Recherche „capabilities-Tool für LLM-Erklärbarkeit“:** Im MCP-SDK
+(`@modelcontextprotocol/server`) gefunden: `ServerOptions.instructions`
+(String, Teil der `initialize`-Antwort) ist laut Typdefinition genau dafür
+vorgesehen — "Optional instructions describing how to use the server and
+its features" — wurde von diesem Produkt aber nie gesetzt. Das ist der
+spec-eigene Mechanismus, nicht das selbstgebaute
+`rheinagent_file_capabilities_get`. Umgesetzt:
+- `server.ts`: `new McpServer(serverInfo, { instructions: SERVER_INSTRUCTIONS })`
+  — kompakte Workflow-Kurzanleitung (Discover → Upload → Inspect → Process
+  → Delete, IDs sind opak), erreicht das Modell einmal pro Session ohne
+  Tool-Call.
+- Da nicht jeder MCP-Client `instructions` an das Modell durchreicht:
+  redundant auch als neues `usage`-Feld in
+  `rheinagent_file_capabilities_get`s Antwort (Klartext-Content **und**
+  `structuredContent`), da viele Agent-Frameworks dieses Tool ohnehin früh
+  aufrufen. Beide Quellen kommen aus derselben Konstante `USAGE_STEPS`
+  (`src/lib/capabilities.ts`), damit sie nicht auseinanderlaufen.
+- Zusätzlich `capabilities.limits.rate_limit_window_ms`/
+  `rate_limits_per_window` ergänzt (aus `src/lib/rateLimit.ts` exportiert)
+  — ein Client kennt sein Pacing-Budget vorab statt erst über einen
+  `rate limit exceeded`-Fehler.
+
+**Workflow-Verbesserung:** neues `npm run check` (= `tsc --noEmit` + `npm
+test`) bündelt das komplette `docs/VERSIONING.md`-Release-Gate in einem
+Befehl statt zwei manuell zu merkenden Kommandos.
+
+**Getestet:** Live end-to-end — `initialize`-Antwort trägt `instructions`,
+`capabilities_get` trägt `usage` + Rate-Limit-Felder, `upload_finalize`/
+`get` liefern durchgängig `snake_case`, eine `job_id` als `file_id` und ein
+Path-Traversal-String scheitern beide als klare `Input validation error`
+statt internal error. 12 neue automatisierte Tests (`test/contracts.test.ts`
+für ID-Felder + Wire-Mapper, `test/capabilities.test.ts` — vorher komplett
+ungetestetes Modul) — jetzt **44 automatisierte Tests**, `npm run check`
+fehlerfrei. Tool-Anzahl unverändert bei 13 (reine Vertragsverbesserung).
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (neue Absätze: Wire-
+Konvention, ID-Validierung, Instructions/Usage-Pattern, Rate-Limit-Feld),
+`README.md`, `docs/HANDOFF.md`, `docs/VERSIONING.md` (Release-Gate nutzt
+jetzt `npm run check`).
+
 ## 2026-09-11 — Bind-Host-Fix (loopback-only) + Health/Doctor-Tool
 
 Auf Anfrage: Verbesserungen für den MCP durchdacht (Bind-Host-Lücke,

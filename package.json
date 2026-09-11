@@ -5,7 +5,9 @@
   "scripts": {
     "serve": "tsx server.ts",
     "serve:dataplane": "tsx dataplane.ts",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",

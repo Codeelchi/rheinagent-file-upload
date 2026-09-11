@@ -15,7 +15,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import { z } from "zod";
 
-import { getCapabilities, HEALTH_PROFILE } from "./src/lib/capabilities.js";
+import { getCapabilities, HEALTH_PROFILE, USAGE_STEPS } from "./src/lib/capabilities.js";
 import { auditInvocation, auditCriticalWrite, loadAuditConfig, checkHubEndpointReachable } from "./src/lib/audit.js";
 import {
   ensureDirs,
@@ -53,7 +53,12 @@ import {
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
   HealthSchema,
+  FileIdField,
+  JobIdField,
+  UploadIdField,
+  DeleteTokenField,
 } from "./src/lib/schemas.js";
+import { toWireFile, toWireJob, toWireDeleteTicket } from "./src/lib/wire.js";
 
 const logger = createLogger("rheinagent-file-upload.control-plane");
 
@@ -205,7 +210,7 @@ function registerTools(server: McpServer): void {
       title: "Finalize file upload",
       description:
         "Validates the staged bytes for a previously prepared upload_id (size, magic-byte sniff vs declared extension, hash) and atomically moves them into accepted storage.",
-      inputSchema: z.object({ upload_id: z.string() }),
+      inputSchema: z.object({ upload_id: UploadIdField }),
       outputSchema: FileRecordSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -253,7 +258,7 @@ function registerTools(server: McpServer): void {
 
       return {
         content: [{ type: "text", text: `"${record.filename}" accepted as ${record.fileId} (${record.sizeBytes} bytes).` }],
-        structuredContent: record,
+        structuredContent: toWireFile(record),
       };
     }),
   );
@@ -270,7 +275,7 @@ function registerTools(server: McpServer): void {
     guarded("rheinagent_file_list", "read", async ({ cursor, limit }) => {
       const page = await listFilesPage(cursor, limit);
       await auditInvocation("rheinagent_file_list", { result_count: page.files.length });
-      const body = { files: page.files, next_cursor: page.nextCursor };
+      const body = { files: page.files.map(toWireFile), next_cursor: page.nextCursor };
       return { content: [{ type: "text", text: `${page.files.length} file(s).` }], structuredContent: body };
     }),
   );
@@ -281,7 +286,7 @@ function registerTools(server: McpServer): void {
       title: "Get file metadata (and small text content inline)",
       description:
         "Returns metadata for a file_id. For small text-category files, content is inlined; larger or binary files are metadata-only — use rheinagent_file_download_prepare to fetch those via the data plane, not MCP JSON.",
-      inputSchema: z.object({ file_id: z.string() }),
+      inputSchema: z.object({ file_id: FileIdField }),
       outputSchema: FileViewResultSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -293,7 +298,7 @@ function registerTools(server: McpServer): void {
       if (record.mimeCategory === "text" && record.sizeBytes <= INLINE_CONTENT_MAX_BYTES) {
         content = await fs.readFile(await filePath(file_id), "utf-8");
       }
-      const body = { ...record, content };
+      const body = { ...toWireFile(record), content };
       return {
         content: [{ type: "text", text: content ?? `${record.filename} (${record.sizeBytes} bytes, ${record.mimeCategory})` }],
         structuredContent: body,
@@ -307,7 +312,7 @@ function registerTools(server: McpServer): void {
       title: "Prepare a file download",
       description:
         "Issues a short-lived download_token and data-plane download_url for a file_id. Use this for large/binary files that rheinagent_file_get won't inline; the token is reusable until it expires (15 min).",
-      inputSchema: z.object({ file_id: z.string() }),
+      inputSchema: z.object({ file_id: FileIdField }),
       outputSchema: DownloadPrepareResultSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -332,8 +337,9 @@ function registerTools(server: McpServer): void {
     "rheinagent_file_process_prepare",
     {
       title: "Prepare a processing job",
-      description: "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet.",
-      inputSchema: z.object({ file_id: z.string(), processor_id: z.string() }),
+      description:
+        "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet. See rheinagent_file_capabilities_get's processors list for valid processor_id values.",
+      inputSchema: z.object({ file_id: FileIdField, processor_id: z.string() }),
       outputSchema: JobRecordSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -345,7 +351,7 @@ function registerTools(server: McpServer): void {
       }
       const job = await createJob(file_id, processor_id);
       await auditInvocation("rheinagent_file_process_prepare", { processor_id });
-      return { content: [{ type: "text", text: `job ${job.jobId} prepared (processor ${processor_id}).` }], structuredContent: job };
+      return { content: [{ type: "text", text: `job ${job.jobId} prepared (processor ${processor_id}).` }], structuredContent: toWireJob(job) };
     }),
   );
 
@@ -354,7 +360,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Apply a processing job",
       description: "Runs the registered processor for a prepared job_id and atomically stores the result.",
-      inputSchema: z.object({ job_id: z.string() }),
+      inputSchema: z.object({ job_id: JobIdField }),
       outputSchema: JobResultEnvelopeSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -397,7 +403,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Get job status",
       description: "Returns the current state of a processing job.",
-      inputSchema: z.object({ job_id: z.string() }),
+      inputSchema: z.object({ job_id: JobIdField }),
       outputSchema: JobRecordSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -405,7 +411,7 @@ function registerTools(server: McpServer): void {
       const job = await getJob(job_id);
       if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
       await auditInvocation("rheinagent_file_job_get");
-      return { content: [{ type: "text", text: `job ${job_id}: ${job.state}` }], structuredContent: job };
+      return { content: [{ type: "text", text: `job ${job_id}: ${job.state}` }], structuredContent: toWireJob(job) };
     }),
   );
 
@@ -414,7 +420,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Get job result",
       description: "Returns the stored result of a completed processing job.",
-      inputSchema: z.object({ job_id: z.string() }),
+      inputSchema: z.object({ job_id: JobIdField }),
       outputSchema: JobResultEnvelopeSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -432,7 +438,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Prepare file deletion",
       description: "Marks a file pending-delete and returns a delete_token. The file is not removed until delete_apply is called with this token.",
-      inputSchema: z.object({ file_id: z.string() }),
+      inputSchema: z.object({ file_id: FileIdField }),
       outputSchema: DeleteTicketResultSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -440,7 +446,7 @@ function registerTools(server: McpServer): void {
       try {
         const ticket = await createDeleteTicket(file_id);
         await auditInvocation("rheinagent_file_delete_prepare");
-        return { content: [{ type: "text", text: `delete_token ${ticket.deleteToken} prepared for ${file_id}.` }], structuredContent: ticket };
+        return { content: [{ type: "text", text: `delete_token ${ticket.deleteToken} prepared for ${file_id}.` }], structuredContent: toWireDeleteTicket(ticket) };
       } catch (err) {
         return { content: [{ type: "text", text: String(err) }], isError: true };
       }
@@ -453,7 +459,7 @@ function registerTools(server: McpServer): void {
       title: "Apply file deletion",
       description:
         "Permanently removes the file associated with a delete_token from accepted storage. Asks for explicit confirmation before deleting (multi-round-trip elicitation) since this is a destructive, irreversible operation.",
-      inputSchema: z.object({ delete_token: z.string() }),
+      inputSchema: z.object({ delete_token: DeleteTokenField }),
       outputSchema: FileListResultSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
@@ -482,7 +488,7 @@ function registerTools(server: McpServer): void {
         const page = await listFilesPage();
         return {
           content: [{ type: "text", text: `"${record.filename}" deleted.` }],
-          structuredContent: { files: page.files, next_cursor: page.nextCursor },
+          structuredContent: { files: page.files.map(toWireFile), next_cursor: page.nextCursor },
         };
       } catch (err) {
         return { content: [{ type: "text", text: String(err) }], isError: true };
@@ -495,9 +501,21 @@ const expressApp = express();
 expressApp.use(cors());
 expressApp.use(express.json());
 
+// Per-spec initialize-time guidance for the connecting model — seen once
+// per session with no extra tool call, unlike rheinagent_file_capabilities_get's
+// `usage` field (same content, kept in sync via src/lib/capabilities.ts's
+// USAGE_STEPS) which only reaches the model if/when it's explicitly called.
+const SERVER_INSTRUCTIONS = [
+  "RheinAgent File Upload MCP: secure file upload, storage, and controlled server-side processing.",
+  ...USAGE_STEPS,
+].join("\n- ");
+
 const mcpHandler = createMcpHandler(
   () => {
-    const server = new McpServer({ name: "RheinAgent File Upload MCP", version: "0.2.0" });
+    const server = new McpServer(
+      { name: "RheinAgent File Upload MCP", version: "0.2.0" },
+      { instructions: SERVER_INSTRUCTIONS },
+    );
     registerTools(server);
     return server;
   },

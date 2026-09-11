@@ -106,10 +106,11 @@ hier, bevor es gemacht wird.
 
 Vor jedem Release-Tag:
 
-- [ ] `npx tsc --noEmit` fehlerfrei
+- [ ] `npm run check` fehlerfrei (= `tsc --noEmit` + alle automatisierten Tests unter `test/`)
 - [ ] Manuelle End-to-End-Probe aller 13 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
-      für das zuletzt dokumentierte Ergebnis) bzw. die automatisierten Tests
-      unter `test/` (siehe [HANDOFF.md](HANDOFF.md) zum aktuellen Abdeckungsstand)
+      für das zuletzt dokumentierte Ergebnis) — automatisierte Tests ersetzen
+      das noch nicht vollständig, siehe [HANDOFF.md](HANDOFF.md) zum aktuellen
+      Abdeckungsstand
 - [ ] `BUILDLOG.md` aktualisiert
 - [ ] Kein Secret, kein `data/`-Inhalt im Diff (`git status` vor jedem Commit)
 

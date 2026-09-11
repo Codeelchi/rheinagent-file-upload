@@ -22,6 +22,13 @@ und kontrollierte serverseitige Dateiverarbeitung.
 - Lizenzierung und Audit sind bewusst **nicht** selbst implementiert, sondern
   binden an die zentralen RheinAgent-Plattformdienste an — siehe
   [docs/LICENSE-FLOW.md](docs/LICENSE-FLOW.md) und [docs/AUDIT.md](docs/AUDIT.md)
+- Jedes Tool-Ein-/Ausgabefeld ist `snake_case`; `file_id`/`job_id`/
+  `upload_id`/`delete_token` werden bereits im `inputSchema` per Präfix-
+  Regex validiert, nicht erst tief in der Implementierung
+- Der Server erklärt sein eigenes Workflow-Muster dem anfragenden LLM über
+  das `instructions`-Feld der `initialize`-Antwort **und** redundant über
+  `rheinagent_file_capabilities_get`s `usage`-Feld — siehe
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Schnellstart (lokal/Entwicklung)
 

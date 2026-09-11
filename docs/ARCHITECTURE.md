@@ -143,6 +143,45 @@ Jedes Tool deklariert ein zod-`outputSchema` (siehe `src/lib/schemas.ts`),
 das `structuredContent` beschreibt — Clients können das laut Spec gegen
 `structuredContent` validieren, statt es blind zu vertrauen.
 
+**Namenskonvention (Wire vs. intern):** Jedes Feld in jedem `inputSchema`
+und jedem `outputSchema` ist `snake_case` (`file_id`, `declared_size_bytes`,
+`size_bytes`, `pending_delete`, …) — durchgängig, auch für Felder, die aus
+internen TypeScript-Records (`FileRecord`/`JobRecord`/`DeleteTicket` in
+`src/lib/store.ts`, dort bewusst `camelCase` nach TS-Konvention) stammen.
+Die Übersetzung passiert ausschließlich in `src/lib/wire.ts`
+(`toWireFile()`/`toWireJob()`/`toWireDeleteTicket()`) — kein Tool-Handler
+spreadet einen internen Record je direkt in `structuredContent`. Vor
+2026-09-11 mischte der Vertrag beide Konventionen (`FileRecordSchema` &
+Co. waren `camelCase`); als Breaking-Change vor jeder echten Kunden-
+Integration bereinigt, siehe [BUILDLOG.md](../BUILDLOG.md).
+
+**ID-Validierung am Vertrag, nicht nur intern:** `file_id`/`job_id`/
+`upload_id`/`delete_token`-Eingabefelder sind im `inputSchema` selbst per
+Regex auf ihr jeweiliges Präfix eingeschränkt (`FileIdField`/`JobIdField`/
+`UploadIdField`/`DeleteTokenField` in `src/lib/schemas.ts`, gebaut aus
+`idPattern()`/`ID_PREFIXES` in `src/lib/ids.ts`). Eine falsch-geformte oder
+ID der falschen Art (z. B. ein `job_id`-Wert an `file_id` übergeben) scheitert
+dadurch als saubere MCP-Schema-Validierung, bevor der Handler überhaupt
+läuft — nicht erst tief in `assertOpaqueId()` als generischer
+"internal error in `<tool>`".
+
+**Wie ein LLM-Client die Tools versteht:** Der Server setzt das
+spec-eigene `instructions`-Feld der `initialize`-Antwort (`server.ts`,
+`ServerOptions.instructions`) mit einer kompakten Workflow-Kurzanleitung
+(Discover → Upload → Inspect → Process → Delete, inkl. "IDs sind opak,
+nie selbst konstruieren"). Das erreicht das Modell einmal pro Session ohne
+zusätzlichen Tool-Call — aber nicht jeder MCP-Client reicht `instructions`
+in den Modellkontext durch. Als Fallback trägt
+`rheinagent_file_capabilities_get`s Antwort dieselbe Anleitung zusätzlich
+als `usage`-Array (Klartext-Content **und** `structuredContent`), da viele
+Agent-Frameworks dieses Tool ohnehin früh in der Session aufrufen. Beide
+Quellen kommen aus derselben Konstante `USAGE_STEPS`
+(`src/lib/capabilities.ts`), damit sie nicht auseinanderlaufen.
+`capabilities.limits` trägt seit 2026-09-11 zusätzlich
+`rate_limit_window_ms`/`rate_limits_per_window` (aus `src/lib/rateLimit.ts`
+exportiert) — ein Client kennt sein Pacing-Budget dadurch vorab, statt es
+erst über einen `rate limit exceeded`-Fehler zu lernen.
+
 | Tool | Input | `structuredContent` (Schema) | Annotations | Rate-Limit-Klasse |
 |---|---|---|---|---|
 | `rheinagent_file_capabilities_get` | — | `CapabilitiesSchema` | readOnly, idempotent | read |

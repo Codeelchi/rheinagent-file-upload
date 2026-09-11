@@ -13,8 +13,9 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 - Lokaler Checkout: `/home/Technowolf/mcp-ui-test` auf `berry`.
 - Server starten: `npm run serve` (Control Plane, Port 3901) **und**
   `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für
-  Uploads/Downloads. `npm test` für die automatisierten Tests, `npx tsc
-  --noEmit` für den Typecheck.
+  Uploads/Downloads. `npm run check` bündelt Typecheck + Tests (= das
+  Release-Gate aus [VERSIONING.md](VERSIONING.md)) in einem Befehl; `npm
+  test`/`npm run typecheck` einzeln bei Bedarf.
 - Arbeits-Workflow für dieses Repo (siehe auch Memory
   `feedback_mcp_ui_test_workflow`): jede Änderungsrunde endet mit einem
   `BUILDLOG.md`-Eintrag + Push nach `github.com/Codeelchi/rheinagent-file-upload`,
@@ -117,6 +118,51 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **Tool-Verträge auditiert + LLM-Erklärbarkeit umgesetzt.** Auf Anfrage
+  ("stelle sicher, dass die Tools korrekte Beschreibungen/Verträge haben
+  und recherchiere zum capabilities-Tool, um einem LLM die Funktionen zu
+  erklären") alle 13 Tool-Beschreibungen/Contracts durchgesehen und drei
+  echte Lücken gefunden + behoben:
+  1. **Wire-Format war inkonsistent** — `FileRecordSchema`/`JobRecordSchema`/
+     `DeleteTicketResultSchema` gaben `camelCase` zurück (direkt aus den
+     internen `store.ts`-Records gespreadet), während jedes Tool-Input-Feld
+     (`file_id`, `declared_size_bytes`, …) und `UploadPrepareResultSchema`/
+     `DownloadPrepareResultSchema` bereits `snake_case` waren. Jetzt
+     durchgängig `snake_case` über einen neuen Mapping-Layer
+     (`src/lib/wire.ts`: `toWireFile()`/`toWireJob()`/
+     `toWireDeleteTicket()`) — bewusst als Breaking-Change vor jeder
+     echten Kunden-Integration bereinigt, siehe
+     [VERSIONING.md](VERSIONING.md) Schema-Kompatibilität.
+  2. **`file_id`/`job_id`/`upload_id`/`delete_token`-Eingaben waren nur
+     lose `z.string()`** — eine falsche oder falsch-geformte ID scheiterte
+     dadurch als generischer "internal error in `<tool>`" statt als
+     saubere Validierungsmeldung. Jetzt per-Kind-Regex direkt im
+     `inputSchema` (`FileIdField`/`JobIdField`/`UploadIdField`/
+     `DeleteTokenField` in `src/lib/schemas.ts`, gebaut aus
+     `idPattern()`/`ID_PREFIXES` in `src/lib/ids.ts`) — lehnt auch eine ID
+     der falschen Art ab (z. B. `job_id` an `file_id` übergeben), nicht
+     nur "irgendein opaker String".
+  3. **Kein Mechanismus, der einem LLM-Client das Workflow-Muster
+     erklärt.** Recherche in den MCP-SDK-Typen ergab: das spec-eigene
+     `instructions`-Feld der `initialize`-Antwort
+     (`ServerOptions.instructions` in `@modelcontextprotocol/server`) ist
+     genau dafür vorgesehen, wurde aber nie gesetzt. Jetzt gesetzt
+     (`server.ts`, `SERVER_INSTRUCTIONS`) — eine kompakte Workflow-
+     Kurzanleitung (Discover → Upload → Inspect → Process → Delete + "IDs
+     sind opak"). Da nicht jeder MCP-Client `instructions` an das Modell
+     durchreicht, trägt `rheinagent_file_capabilities_get`s Antwort
+     dieselbe Anleitung redundant als neues `usage`-Feld (Klartext-Content
+     **und** `structuredContent`) — beide Quellen aus derselben Konstante
+     `USAGE_STEPS` (`src/lib/capabilities.ts`), damit sie nicht
+     auseinanderlaufen.
+  - Live end-to-end verifiziert: `initialize`-Antwort trägt `instructions`,
+    `capabilities_get` trägt `usage`, `upload_finalize`/`get` liefern
+    `snake_case`, eine `job_id` als `file_id` und ein Path-Traversal-String
+    scheitern beide als klare `Input validation error` statt als internal
+    error. 9 neue automatisierte Tests (`test/contracts.test.ts`) für die
+    ID-Feld-Validatoren und Wire-Mapper — jetzt **41 automatisierte Tests**,
+    `npx tsc --noEmit` fehlerfrei. Tool-Anzahl unverändert bei 13 (reine
+    Vertragsverbesserung, keine neuen Tools).
 - **Bind-Host-Standard auf `127.0.0.1` geändert.** Beide Prozesse lauschten
   vorher ohne expliziten Host (`app.listen(PORT)`), was auf Node/Express
   `0.0.0.0` bedeutet — auf einem Homelab-Host im Tailnet/LAN ungeschützt

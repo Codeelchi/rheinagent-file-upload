@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { idPattern, ID_PREFIXES } from "./ids.js";
 
 /**
  * Shared zod schemas for tool `outputSchema` declarations. Per the MCP
@@ -7,23 +8,48 @@ import { z } from "zod";
  * returns exactly one of these shapes.
  */
 
+/**
+ * Per-kind opaque-id `inputSchema` fields, shared across every tool that
+ * takes a file_id/job_id/upload_id/delete_token. Without this, a malformed
+ * id (or an id of the wrong kind, e.g. a job_id passed as file_id) only
+ * fails deep inside store.ts's `assertOpaqueId()` — the `guarded()` wrapper
+ * in server.ts then reports it as a generic "internal error in <tool>",
+ * which is honest (nothing unsafe happened) but unhelpful to a caller
+ * (human or LLM) trying to figure out what went wrong. Validating the shape
+ * at the zod `inputSchema` layer instead makes the MCP SDK reject it before
+ * the handler even runs, with a standard schema-validation error that names
+ * the field and the expected pattern.
+ */
+export const FileIdField = z.string().regex(idPattern(ID_PREFIXES.file), "must be a file_id previously returned by this server");
+export const JobIdField = z.string().regex(idPattern(ID_PREFIXES.job), "must be a job_id previously returned by this server");
+export const UploadIdField = z.string().regex(idPattern(ID_PREFIXES.upload), "must be an upload_id previously returned by this server");
+export const DeleteTokenField = z.string().regex(idPattern(ID_PREFIXES.delete), "must be a delete_token previously returned by this server");
+
+// Wire shapes are deliberately snake_case throughout — matching every tool
+// *input* field (file_id, declared_size_bytes, processor_id, delete_token,
+// ...) and the other result schemas below. The internal TypeScript types in
+// src/lib/store.ts (FileRecord, JobRecord, DeleteTicket) stay camelCase —
+// that's an unrelated, purely internal convention — so every place that
+// returns one of these as `structuredContent` goes through the `toWire*()`
+// mappers in src/lib/wire.ts rather than spreading the internal record
+// directly onto the wire.
 export const FileRecordSchema = z.object({
-  fileId: z.string(),
+  file_id: z.string(),
   filename: z.string(),
-  sizeBytes: z.number().int().nonnegative(),
-  mimeCategory: z.enum(["text", "pdf", "image", "archive", "unknown"]),
+  size_bytes: z.number().int().nonnegative(),
+  mime_category: z.enum(["text", "pdf", "image", "archive", "unknown"]),
   sha256: z.string(),
-  createdAt: z.string(),
-  pendingDelete: z.boolean(),
+  created_at: z.string(),
+  pending_delete: z.boolean(),
 });
 
 export const JobRecordSchema = z.object({
-  jobId: z.string(),
-  fileId: z.string(),
-  processorId: z.string(),
+  job_id: z.string(),
+  file_id: z.string(),
+  processor_id: z.string(),
   state: z.enum(["prepared", "completed", "failed"]),
-  createdAt: z.string(),
-  completedAt: z.string().optional(),
+  created_at: z.string(),
+  completed_at: z.string().optional(),
   error: z.string().optional(),
 });
 
@@ -37,8 +63,19 @@ export const CapabilitiesSchema = z.object({
   limits: z.object({
     max_upload_bytes: z.number().int().positive(),
     allowed_mime_categories: z.array(z.string()),
+    rate_limit_window_ms: z.number().int().positive(),
+    rate_limits_per_window: z.object({
+      read: z.number().int().positive(),
+      write: z.number().int().positive(),
+      critical: z.number().int().positive(),
+    }),
   }),
   processors: z.array(z.string()),
+  // Redundant with the server's initialize-time `instructions` (see
+  // server.ts) on purpose: some MCP clients don't forward `instructions`
+  // into the model's context, but a tool explicitly called and its result
+  // read back is reliably seen — this is the belt to that suspenders.
+  usage: z.array(z.string()),
 });
 
 export const UploadPrepareResultSchema = z.object({
@@ -62,9 +99,9 @@ export const JobResultEnvelopeSchema = z.object({
 });
 
 export const DeleteTicketResultSchema = z.object({
-  deleteToken: z.string(),
-  fileId: z.string(),
-  createdAt: z.string(),
+  delete_token: z.string(),
+  file_id: z.string(),
+  created_at: z.string(),
 });
 
 export const DownloadPrepareResultSchema = z.object({
