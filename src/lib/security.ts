@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readZipEntries } from "./officeZip.js";
 
 /**
  * Validation and filesystem-safety primitives for the upload data plane.
@@ -14,7 +15,7 @@ export const MAX_UPLOAD_BYTES = Number(
   process.env.RHEINAGENT_FILE_UPLOAD_MAX_BYTES ?? 25 * 1024 * 1024,
 );
 
-export type MimeCategory = "text" | "pdf" | "image" | "archive" | "unknown";
+export type MimeCategory = "text" | "pdf" | "image" | "office" | "archive" | "unknown";
 
 const EXTENSION_ALLOWLIST: Record<string, MimeCategory> = {
   ".txt": "text",
@@ -25,6 +26,8 @@ const EXTENSION_ALLOWLIST: Record<string, MimeCategory> = {
   ".png": "image",
   ".jpg": "image",
   ".jpeg": "image",
+  ".docx": "office",
+  ".xlsx": "office",
 };
 
 // Archive formats are recognized (for honest categorization) but never
@@ -69,7 +72,13 @@ export function sniffMimeCategory(buf: Buffer): MimeCategory {
     buf[1] === 0x4b &&
     (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)
   ) {
-    return "archive"; // PK\x03\x04 and friends (also covers docx/xlsx/jar)
+    // PK\x03\x04 and friends: every ZIP-family container (plain .zip, but
+    // also .docx/.xlsx/.jar, all OOXML-on-ZIP). A generic zip is rejected
+    // outright (see the archive-bomb note below); a .docx/.xlsx is only
+    // accepted if it genuinely declares itself as an OOXML word/spreadsheet
+    // document in its own [Content_Types].xml — not just by having a
+    // matching file extension, which would let a plain renamed .zip through.
+    return isOoxmlOfficeContainer(buf) ? "office" : "archive";
   }
   // Heuristic text check: no NUL bytes and mostly printable in the sampled
   // prefix. Anything else is "unknown" and rejected.
@@ -81,6 +90,31 @@ export function sniffMimeCategory(buf: Buffer): MimeCategory {
   }
   if (controlBytes / Math.max(sample.length, 1) < 0.05) return "text";
   return "unknown";
+}
+
+/**
+ * True only if `buf` is a ZIP container whose `[Content_Types].xml` part
+ * declares an OOXML word-processing or spreadsheet main document —
+ * i.e. an actual `.docx`/`.xlsx`, not just any ZIP file. Fails closed:
+ * any parse error (corrupt zip, missing part, oversized part) is treated
+ * as "not office", never as "office" by default.
+ */
+function isOoxmlOfficeContainer(buf: Buffer): boolean {
+  try {
+    const entries = readZipEntries(buf, {
+      wantedNames: new Set(["[Content_Types].xml"]),
+      maxEntryInflatedBytes: 64 * 1024,
+      maxTotalInflatedBytes: 64 * 1024,
+    });
+    const contentTypesXml = entries.get("[Content_Types].xml")?.toString("utf-8");
+    if (!contentTypesXml) return false;
+    return (
+      contentTypesXml.includes("wordprocessingml.document.main") ||
+      contentTypesXml.includes("spreadsheetml.sheet.main")
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function sha256Hex(buf: Buffer): string {

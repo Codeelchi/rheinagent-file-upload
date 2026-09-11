@@ -72,6 +72,7 @@ const CONTENT_TYPE_BY_CATEGORY: Record<MimeCategory, string> = {
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
   image: "application/octet-stream", // exact image subtype isn't tracked; stays generic/safe
+  office: "application/octet-stream", // covers both docx/xlsx; stays generic/safe
   archive: "application/octet-stream",
   unknown: "application/octet-stream",
 };

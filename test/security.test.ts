@@ -8,6 +8,7 @@ import {
   sha256Hex,
 } from "../src/lib/security.js";
 import { assertOpaqueId, newFileId, newUploadId } from "../src/lib/ids.js";
+import { buildSampleDocx, buildSampleXlsx, buildZip } from "./testZip.js";
 
 // --- opaque id enforcement: path traversal must be rejected before any fs path is built ---
 
@@ -38,6 +39,8 @@ test("classifyExtension accepts the documented allowlist", () => {
   assert.equal(classifyExtension("notes.txt"), "text");
   assert.equal(classifyExtension("report.pdf"), "pdf");
   assert.equal(classifyExtension("photo.png"), "image");
+  assert.equal(classifyExtension("report.docx"), "office");
+  assert.equal(classifyExtension("sheet.xlsx"), "office");
 });
 
 // --- magic-byte sniffing vs claimed extension (the core upload security test) ---
@@ -87,4 +90,35 @@ test("sha256Hex is deterministic", () => {
   const a = sha256Hex(Buffer.from("same input"));
   const b = sha256Hex(Buffer.from("same input"));
   assert.equal(a, b);
+});
+
+// --- office (docx/xlsx) sniffing: a genuine OOXML container vs. a lookalike plain zip ---
+
+test("sniffMimeCategory recognizes a genuine docx as office, not generic archive", () => {
+  assert.equal(sniffMimeCategory(buildSampleDocx()), "office");
+});
+
+test("sniffMimeCategory recognizes a genuine xlsx as office, not generic archive", () => {
+  assert.equal(sniffMimeCategory(buildSampleXlsx()), "office");
+});
+
+test("sniffMimeCategory treats a plain zip (no OOXML content-type declaration) as archive, not office", () => {
+  const plainZip = buildZip([{ name: "hello.txt", content: Buffer.from("just a plain zip") }]);
+  assert.equal(sniffMimeCategory(plainZip), "archive");
+});
+
+test("sniffMimeCategory rejects a plain-zip-renamed-to-.docx at the declared/sniffed consistency check", () => {
+  // Mirrors the existing "PNG smuggled under .txt" test: renaming a plain
+  // zip to .docx must not be enough to pass upload_finalize's consistency
+  // check, since the sniffed category (archive) won't match declared (office).
+  const plainZip = buildZip([{ name: "hello.txt", content: Buffer.from("just a plain zip") }]);
+  const declared = classifyExtension("fake.docx");
+  const sniffed = sniffMimeCategory(plainZip);
+  assert.equal(declared, "office");
+  assert.notEqual(sniffed, declared);
+});
+
+test("sniffMimeCategory fails closed (archive) for a docx whose [Content_Types].xml is malformed/missing", () => {
+  const brokenDocx = buildZip([{ name: "word/document.xml", content: Buffer.from("<w:document/>") }]);
+  assert.equal(sniffMimeCategory(brokenDocx), "archive");
 });

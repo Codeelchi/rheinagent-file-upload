@@ -164,15 +164,30 @@ einer klaren Fehlermeldung abgelehnt wird, statt erst nach einem echten
 Laufzeit-Check pro Processor-Funktion bleibt zusätzlich als Verteidigung
 in der Tiefe bestehen.
 
-Aktuell registriert:
+Aktuell registriert (volle Optionsreferenz: [PROCESSORS.md](PROCESSORS.md)):
 
 | Processor | `mime_category` | Ergebnis |
 |---|---|---|
 | `text_stats` | text | `line_count`, `word_count`, `char_count` |
 | `text_uppercase` | text | `transformed_text` (kompletter Inhalt, Großbuchstaben) |
+| `text_extract` | text | `text` (bis 64 KiB), `char_count`, `word_count`, `line_count`, `truncated` |
+| `markdown_structure` | text (nur `.md`) | `headings`, `links_count`, `code_block_count` |
+| `csv_inspect` | text (nur `.csv`) | `delimiter`, `row_count`, `column_count`, `headers`, `sample_rows`, `truncated` |
+| `json_inspect` | text (nur `.json`) | `root_type`, `array_length`, `keys`, `keys_truncated`, `sample`, `sample_truncated` |
 | `image_metadata` | image | `format` (`png`/`jpeg`), `width`, `height`, `size_bytes` — Dimensionen per Hand aus PNG-IHDR bzw. JPEG-SOF-Markern geparst, **keine** Bildbibliothek (kein `sharp`/`jimp`: nativ bzw. für reines Header-Lesen unnötig) |
 | `pdf_metadata` | pdf | `page_count`, `pdf_format_version`, `title`, `author` (letztere `null`, falls nicht gesetzt) |
 | `pdf_extract_text` | pdf | `extracted_text` (auf 64 KiB gekappt, wie `INLINE_CONTENT_MAX_BYTES` an anderer Stelle — Ergebnis fließt über `result_get` durch MCP-JSON zurück), `page_count`, `page` (`null` = ganzes Dokument, sonst 1-indexierte Seitenzahl), `truncated` |
+| `docx_extract_text` | office (nur `.docx`) | `text` (bis 64 KiB), `paragraph_count`, `table_count`, `truncated` |
+| `xlsx_inspect` | office (nur `.xlsx`) | `sheet_names`, `sheet`, `row_count`, `column_count`, `headers`, `sample_rows`, `shared_strings_truncated`, `truncated` |
+
+`text` deckt vier Extensions ab (`.txt`/`.md`/`.csv`/`.json`) — `csv_inspect`,
+`json_inspect` und `markdown_structure` prüfen deshalb zusätzlich zur groben
+`mime_category` noch die konkrete Dateiendung selbst (`requireExtension()`),
+ebenso `docx_extract_text`/`xlsx_inspect` innerhalb von `office`
+(`.docx`/`.xlsx`). `docx`/`xlsx` sind intern ZIP-Container — siehe
+[SECURITY.md](SECURITY.md) für den bounded-Unzip-Ansatz
+(`src/lib/officeZip.ts`/`src/lib/officeXml.ts`), der das strukturell vom
+generellen Archive-Bomb-Ausschluss trennt.
 
 `pdf_metadata`/`pdf_extract_text` nutzen `pdfjs-dist` (Mozillas eigener
 PDF.js-Kern) — bewusst **nicht** das populärere `pdf-parse`, das

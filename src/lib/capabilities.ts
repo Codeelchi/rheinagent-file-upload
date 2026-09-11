@@ -39,7 +39,7 @@ export function getCapabilities() {
     audit_mode: audit.mode,
     limits: {
       max_upload_bytes: MAX_UPLOAD_BYTES,
-      allowed_mime_categories: ["text", "pdf", "image"],
+      allowed_mime_categories: ["text", "pdf", "image", "office"],
       rate_limit_window_ms: WINDOW_MS,
       rate_limits_per_window: { ...LIMITS },
     },

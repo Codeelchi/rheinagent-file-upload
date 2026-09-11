@@ -2,6 +2,92 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Document-Extraction-Processoren: CSV/JSON/Markdown/DOCX/XLSX
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 3 (Document
+Extraction) der priorisierten Reihenfolge.
+
+**6 neue Processor, 2 neue `mime_category`-Erweiterungen.** Ziel:
+`txt`/`md`/`csv`/`json`/`pdf`/`docx`/`xlsx` sinnvoll analysierbar, mit
+harten Ressourcen-Limits, ohne neue Laufzeit-Abhängigkeit.
+
+- **`text_extract`** (text) — bounded Volltext (64 KiB) + char/word/line-Counts,
+  Pendant zu `pdf_extract_text` für reine Textdateien (vorher gab es nur
+  `text_stats`, das keinen Inhalt zurückgab).
+- **`markdown_structure`** (text, nur `.md`) — Headings, Link-Count,
+  Code-Block-Count. Keine Markdown-Ausführung.
+- **`csv_inspect`** (text, nur `.csv`) — hand-geschriebener RFC-4180-naher
+  Tokenizer (Quoting, escaped `""`, eingebettete Delimiter/Newlines in
+  Quotes), Delimiter-Auto-Erkennung (`,`/`;`/Tab) oder `options.delimiter`.
+  Limits: max. 5000 gescannte Zeilen, max. 20 Beispielzeilen, 500 Zeichen
+  pro Zelle.
+- **`json_inspect`** (text, nur `.json`) — `root_type`/`keys`/`array_length`/
+  bounded `sample`. **Sicherheitsdetail**: ein Bracket-Tiefen-Scan über den
+  rohen Text läuft *vor* `JSON.parse()` und lehnt > 64 Verschachtelungs-
+  ebenen ab — verhindert, dass `JSON.parse`s eigener rekursiver Abstieg je
+  mit absurd tiefem Input konfrontiert wird (Stack-Overflow-Risiko).
+- **`docx_extract_text`** / **`xlsx_inspect`** (neue `mime_category: "office"`,
+  nur `.docx`/`.xlsx`) — beide sind ZIP-Container (OOXML). Zwei neue Module
+  dafür, bewusst *keine* allgemeinen Unzip-/XML-Parser:
+  - `src/lib/officeZip.ts`: hand-geschriebener ZIP-Central-Directory-Reader.
+    Entpackt **nur** explizit angeforderte Einträge (nie alle), schreibt nie
+    auf die Platte (Entry-Namen sind reine In-Memory-Map-Keys — Zip-Slip
+    strukturell nicht anwendbar), begrenzt via Node's eigenem
+    `zlib.inflateRawSync(..., {maxOutputLength})` pro Entry (20 MiB) und
+    kumulativ (40 MiB), maximal 5000 Central-Directory-Einträge.
+  - `src/lib/officeXml.ts`: enges Tag-/Regex-Scanning für die bekannten
+    OOXML-Tags (`<w:t>`, `<sheet>`, `<si>`, `<row>`/`<c>`) statt eines
+    echten XML-Parsers — kein XXE-Risiko, da nie ein `<!DOCTYPE>` oder eine
+    externe Entity interpretiert wird (nur die 5 vordefinierten Entities +
+    numerische Zeichenreferenzen).
+  - **`sniffMimeCategory()` unterscheidet jetzt "echtes" OOXML von einem
+    einfachen `.zip`**: ein auf `.docx` umbenanntes `.zip` besteht die
+    Extension-Prüfung, scheitert aber an der Sniff/Declared-Konsistenzprüfung
+    (`isOoxmlOfficeContainer()` prüft `[Content_Types].xml` auf eine echte
+    `wordprocessingml.document.main`/`spreadsheetml.sheet.main`-Deklaration).
+  - `xlsx_inspect`: Shared-Strings bounded auf 20 000 Einträge
+    (`shared_strings_truncated`-Flag statt unbegrenztem Array — explizite
+    Verteidigung gegen eine "sharedStrings-Bombe"), Zeilen-/Spalten-Count
+    primär aus `<dimension>` (exakt, ohne Vollscan), sonst begrenzter
+    Row-Scan (5000) mit `truncated`-Flag, `options.sheet` wählt ein
+    bestimmtes Arbeitsblatt.
+- **Kein neues `npm`-Package.** Alles mit Node-Bordmitteln (`zlib`,
+  Regex/String-Scanning) — dieselbe Supply-Chain-Logik wie die
+  `pdfjs-dist`-Entscheidung.
+
+**Live-Sicherheitsverifikation** (nicht nur Unit-Tests, echte Angriffs-
+payloads durchgespielt): Zip-Bomb (25 MiB hochkomprimierbare Nutzlast,
+komprimiert auf wenige KB) sauber als Job-Fehler abgelehnt, *bevor* der
+große Buffer je materialisiert wird; Entry-Count-Bomb (6000 leere Einträge)
+vor jedem Inflate-Versuch abgelehnt; sharedStrings-Bomb (50 000 deklarierte
+Einträge) korrekt auf 20 000 gekappt statt Speicher zu erschöpfen; extrem
+tiefes JSON (100 000 Ebenen) vor `JSON.parse()` abgelehnt; korruptes/nicht-
+ZIP `.docx` sauber als Job-Fehler abgelehnt; ein plain `.zip`, umbenannt zu
+`.docx`, wird beim Sniff korrekt als `archive` (nicht `office`) erkannt und
+scheitert an der Upload-Konsistenzprüfung.
+
+**Vollständiger Echt-HTTP-End-to-End-Test** (beide Prozesse tatsächlich
+gestartet, echte `curl`-Requests, kein reiner Unit-Test): ein via Python
+gebautes `.docx` über `upload_prepare` → Data-Plane-`PUT` → `upload_finalize`
+(korrekt als `mime_category: "office"` klassifiziert) → `process_prepare`
+(`docx_extract_text`) → `process_apply` → `result_get` — Ergebnis enthält
+exakt den erwarteten extrahierten Text.
+
+**Neue Test-Infrastruktur**: `test/testZip.ts` (kein `*.test.ts` — wird
+nicht als eigene Testdatei ausgeführt) — ein minimaler, spec-valider
+ZIP-Writer in reinem TypeScript (lokale + zentrale Header + EOCD, `store`/
+`deflate`), damit Zip-/Office-Tests ohne externe Binär-Fixtures oder
+Python-Abhängigkeit auskommen, im Stil der bereits vorhandenen
+Hand-Builder für PNG/JPEG in `test/processors.test.ts`.
+
+**48 neue automatisierte Tests** (`test/officeZip.test.ts` 9,
+`test/officeXml.test.ts` 10, `test/processors.test.ts` +25, `test/security.test.ts`
++4) — jetzt **11 Processor** (vorher 5), **16 Tools** (unverändert, reine
+Processor-Erweiterung, kein neues Tool), **134 automatisierte Tests**,
+`npm run check` fehlerfrei. Neue Referenz-Doku
+[PROCESSORS.md](docs/PROCESSORS.md) (vollständige Options-/Limit-Tabelle für
+alle Processor). `docs/ARCHITECTURE.md`/`docs/SECURITY.md` aktualisiert.
+
 ## 2026-09-11 — Persistence-Migration JSON → SQLite
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer (mehrteiliger Auftrag,
