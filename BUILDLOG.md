@@ -2,6 +2,37 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Chunking für `text_extract`/`docx_extract_text`
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 4 (Chunking) der
+priorisierten Reihenfolge — "auch ein 100-Seiten-Dokument muss vollständig
+analysierbar sein, ohne einen riesigen MCP-Response zu erzeugen".
+
+`text_extract` und `docx_extract_text` (die beiden Processor für
+unpaginierten Fließtext beliebiger Länge) nehmen jetzt `options.offset`/
+`options.limit` entgegen und liefern zusätzlich `total_chars`/
+`next_offset`. Ein Client liest ein beliebig langes Dokument vollständig,
+indem er wiederholt mit `offset = vorheriger next_offset` aufruft, bis
+`next_offset: null`. Bewusst **kein** neues, formatübergreifendes
+Chunk-Entity/-Tool — `pdf_extract_text`s bereits vorhandenes
+`options.page` und `xlsx_inspect`s zeilenbasierte Stichprobe lösen
+dasselbe Problem bereits mit dem für ihr Format passenderen Chunk-Begriff
+(Seite bzw. Zeile statt Zeichenfenster); eine künstliche gemeinsame
+Chunk-Abstraktion über alle Formate hätte für keines davon wirklich
+gepasst. `docx_extract_text` scannt intern jetzt bis zu 10 MiB Text (statt
+vorher hart bei 64 KiB abzuschneiden), damit auch lange Dokumente
+vollständig chunk-weise erreichbar sind.
+
+Live end-to-end verifiziert: ein ~145 000 Zeichen langer Text wurde per
+wiederholtem `text_extract`-Aufruf (3 Chunks à max. 64 KiB) exakt
+byte-identisch wieder zusammengesetzt.
+
+5 neue automatisierte Tests (Chunk-Walk über ein komplettes Dokument,
+Offset-/Limit-Validierung, docx-Chunking) — jetzt **137 automatisierte
+Tests**, `npm run check` fehlerfrei. `docs/PROCESSORS.md` um den
+Chunking-Abschnitt ergänzt (inkl. offen gelassenem nächsten Schritt für
+`csv_inspect`/`xlsx_inspect`, aktuell kein bekanntes reales Bedürfnis dafür).
+
 ## 2026-09-11 — Document-Extraction-Processoren: CSV/JSON/Markdown/DOCX/XLSX
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 3 (Document

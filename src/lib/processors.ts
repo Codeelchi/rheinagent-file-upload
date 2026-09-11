@@ -238,15 +238,50 @@ function requireExtension(ctx: ProcessorContext, ext: string): void {
 
 const TEXT_EXTRACT_MAX_CHARS = 64 * 1024;
 
+/**
+ * Character-window options shared by every "potentially long flowing text"
+ * processor (text_extract, docx_extract_text) — the chunking contract for
+ * documents whose full text exceeds one MCP result. `offset` (default 0)
+ * is a character index into the *full* extracted text (not the file
+ * bytes); `limit` (default/max `maxLimit`) is how many characters to
+ * return starting there. A caller walks the whole document by repeating
+ * the call with `offset = previous offset + previous returned length`
+ * until `next_offset` comes back `null`. PDF's own `options.page` plays
+ * the same "give me the next slice" role for page-oriented documents —
+ * this is the equivalent for documents with no native page concept.
+ */
+function parseChunkWindowOptions(options: Record<string, unknown> | undefined, maxLimit: number): { offset: number; limit: number } {
+  const offset = options && "offset" in options ? options.offset : 0;
+  if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) {
+    throw new Error(`options.offset must be a non-negative integer, got ${JSON.stringify(offset)}`);
+  }
+  const limitRaw = options && "limit" in options ? options.limit : maxLimit;
+  if (typeof limitRaw !== "number" || !Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > maxLimit) {
+    throw new Error(`options.limit must be an integer between 1 and ${maxLimit}, got ${JSON.stringify(limitRaw)}`);
+  }
+  return { offset, limit: limitRaw };
+}
+
+function windowText(fullText: string, offset: number, limit: number): { text: string; truncated: boolean; total_chars: number; next_offset: number | null } {
+  const slice = fullText.slice(offset, offset + limit);
+  const nextOffset = offset + slice.length;
+  return {
+    text: slice,
+    truncated: nextOffset < fullText.length,
+    total_chars: fullText.length,
+    next_offset: nextOffset < fullText.length ? nextOffset : null,
+  };
+}
+
 register("text_extract", ["text"], async (ctx) => {
   const content = await fs.readFile(ctx.filePath, "utf-8");
-  const truncated = content.length > TEXT_EXTRACT_MAX_CHARS;
+  const { offset, limit } = parseChunkWindowOptions(ctx.options, TEXT_EXTRACT_MAX_CHARS);
+  const window = windowText(content, offset, limit);
   return {
-    text: truncated ? content.slice(0, TEXT_EXTRACT_MAX_CHARS) : content,
+    ...window,
     char_count: content.length,
     word_count: content.split(/\s+/).filter(Boolean).length,
     line_count: content.split(/\r?\n/).length,
-    truncated,
   };
 });
 
@@ -420,11 +455,19 @@ register("json_inspect", ["text"], async (ctx) => {
 });
 
 const DOCX_TEXT_MAX_CHARS = 64 * 1024;
+// How much text extractDocxText is willing to pull out of the XML at all,
+// independent of how much of it a single call returns to the caller — the
+// actual per-call response is bounded separately by parseChunkWindowOptions
+// below (default/max DOCX_TEXT_MAX_CHARS). Generous (10 MB of text is a
+// very long document) so a large docx is still fully walkable chunk by
+// chunk via options.offset, not silently cut off after the first 64 KiB.
+const DOCX_TEXT_SCAN_CAP_CHARS = 10 * 1024 * 1024;
 const OFFICE_ZIP_MAX_ENTRY_BYTES = 20 * 1024 * 1024;
 const OFFICE_ZIP_MAX_TOTAL_BYTES = 40 * 1024 * 1024;
 
 register("docx_extract_text", ["office"], async (ctx) => {
   requireExtension(ctx, ".docx");
+  const { offset, limit } = parseChunkWindowOptions(ctx.options, DOCX_TEXT_MAX_CHARS);
   const buf = await fs.readFile(ctx.filePath);
   const entries = readZipEntries(buf, {
     wantedNames: new Set(["word/document.xml"]),
@@ -433,12 +476,16 @@ register("docx_extract_text", ["office"], async (ctx) => {
   });
   const documentXml = entries.get("word/document.xml");
   if (!documentXml) throw new Error("docx is missing word/document.xml — not a valid Word document");
-  const result = extractDocxText(documentXml.toString("utf-8"), DOCX_TEXT_MAX_CHARS);
+  const extracted = extractDocxText(documentXml.toString("utf-8"), DOCX_TEXT_SCAN_CAP_CHARS);
+  const window = windowText(extracted.text, offset, limit);
   return {
-    text: result.text,
-    paragraph_count: result.paragraphCount,
-    table_count: result.tableCount,
-    truncated: result.truncated,
+    ...window,
+    // truncated if either this window isn't the end of the (already-scanned)
+    // text, or the scan itself hit DOCX_TEXT_SCAN_CAP_CHARS before reaching
+    // the real end of the document — either way, "not the full picture".
+    truncated: window.truncated || extracted.truncated,
+    paragraph_count: extracted.paragraphCount,
+    table_count: extracted.tableCount,
   };
 });
 

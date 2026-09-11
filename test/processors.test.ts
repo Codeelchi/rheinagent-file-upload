@@ -249,6 +249,46 @@ test("text_extract truncates content past its char limit", async () => {
     const result = await run({ filePath, filename: "sample.txt", mimeCategory: "text" });
     assert.equal(result.truncated, true);
     assert.equal((result.text as string).length, 64 * 1024);
+    assert.equal(result.next_offset, 64 * 1024);
+    assert.equal(result.total_chars, 70_000);
+  });
+});
+
+test("text_extract walks a full document chunk by chunk via options.offset/next_offset", async () => {
+  const content = "0123456789".repeat(10); // 100 chars
+  await withTempFile(Buffer.from(content), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    let offset = 0;
+    let reassembled = "";
+    let iterations = 0;
+    while (true) {
+      iterations++;
+      const result = await run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { offset, limit: 30 } });
+      reassembled += result.text as string;
+      if (result.next_offset === null) break;
+      offset = result.next_offset as number;
+      assert.ok(iterations < 20, "must terminate — runaway loop indicates a chunking bug");
+    }
+    assert.equal(reassembled, content);
+    assert.equal(iterations, 4); // 100 chars / 30-char chunks -> 4 chunks (30+30+30+10)
+  });
+});
+
+test("text_extract rejects an out-of-range options.offset/options.limit", async () => {
+  await withTempFile(Buffer.from("hello"), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { offset: -1 } }),
+      /non-negative integer/,
+    );
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { limit: 0 } }),
+      /between 1 and/,
+    );
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { limit: 999_999 } }),
+      /between 1 and/,
+    );
   });
 });
 
@@ -421,6 +461,17 @@ test("docx_extract_text rejects a zip bomb entry instead of materializing it", a
   await withTempFile(zip, ".docx", async (filePath) => {
     const run = getProcessor("docx_extract_text")!;
     await assert.rejects(() => run({ filePath, filename: "sample.docx", mimeCategory: "office" }));
+  });
+});
+
+test("docx_extract_text supports offset/limit chunk windowing", async () => {
+  await withTempFile(buildSampleDocx(), ".docx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    const full = await run({ filePath, filename: "sample.docx", mimeCategory: "office" });
+    const firstHalf = await run({ filePath, filename: "sample.docx", mimeCategory: "office", options: { offset: 0, limit: 10 } });
+    assert.equal(firstHalf.text, (full.text as string).slice(0, 10));
+    assert.equal(firstHalf.truncated, true);
+    assert.equal(firstHalf.next_offset, 10);
   });
 });
 

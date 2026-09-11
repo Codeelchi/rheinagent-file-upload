@@ -16,7 +16,7 @@ Client nicht raten muss, welcher `processor_id` zu welcher Datei passt.
 |---|---|---|---|
 | `text_stats` | keine | — | `line_count`, `word_count`, `char_count` |
 | `text_uppercase` | keine | — | `transformed_text` (kompletter Dateiinhalt, großgeschrieben) |
-| `text_extract` | keine | — | `text` (bis 64 KiB), `char_count`, `word_count`, `line_count`, `truncated` |
+| `text_extract` | keine | `offset?`, `limit?` (Chunking, s. u.) | `text`, `char_count`, `word_count`, `line_count`, `truncated`, `total_chars`, `next_offset` |
 | `markdown_structure` | `.md` | — | `headings` (`{level, text}[]`), `links_count`, `code_block_count` |
 | `csv_inspect` | `.csv` | `delimiter?: string` (1 Zeichen) | `delimiter`, `row_count`, `column_count`, `headers`, `sample_rows` (max. 20), `truncated` |
 | `json_inspect` | `.json` | — | `root_type`, `array_length`, `keys` (max. 50), `keys_truncated`, `sample`, `sample_truncated` |
@@ -65,7 +65,7 @@ Hand-geparste PNG-/JPEG-Header, keine Bildbibliothek (siehe
 
 | processor_id | Extension-Pflicht | Optionen | Ausgabe |
 |---|---|---|---|
-| `docx_extract_text` | `.docx` | — | `text` (bis 64 KiB), `paragraph_count`, `table_count`, `truncated` |
+| `docx_extract_text` | `.docx` | `offset?`, `limit?` (Chunking, s. u.) | `text`, `paragraph_count`, `table_count`, `truncated`, `total_chars`, `next_offset` |
 | `xlsx_inspect` | `.xlsx` | `sheet?: string` (Blattname) | `sheet_names`, `sheet`, `row_count`, `column_count`, `headers`, `sample_rows` (max. 20), `shared_strings_truncated`, `truncated` |
 
 Beide via `src/lib/officeZip.ts` + `src/lib/officeXml.ts` — kein
@@ -79,6 +79,39 @@ Namen.
 maximal 5000 Central-Directory-Einträge, maximal 20 000 Shared Strings,
 maximal 5000 gescannte Zeilen / 20 Beispielzeilen / 500 Zeichen pro Zelle
 bei `xlsx_inspect`.
+
+## Chunking (seit 2026-09-11)
+
+`text_extract` und `docx_extract_text` — die beiden Processor für
+unpaginierten, potenziell beliebig langen Fließtext — akzeptieren
+`options.offset` (Zeichenindex in den vollständigen extrahierten Text,
+Default `0`) und `options.limit` (wie viele Zeichen ab dort, Default und
+Maximum die jeweilige `*_MAX_CHARS`-Konstante). Ein Client liest ein
+beliebig langes Dokument vollständig, indem er wiederholt
+`offset = vorheriger next_offset` aufruft, bis `next_offset: null`
+zurückkommt (dann ist `truncated: false` für dieses letzte Fenster). Das ist
+derselbe Zweck wie `pdf_extract_text`s `options.page` (dort ist "eine Seite"
+die natürliche Chunk-Einheit; bei DOCX/reinem Text, die kein natives
+Seitenkonzept haben, ist "ein Zeichenfenster" die Einheit) und wie
+`xlsx_inspect`s zeilenbasiertes Sample — alle drei lösen dasselbe Problem
+("ein 100-Seiten-Dokument muss vollständig analysierbar sein, ohne einen
+riesigen MCP-Response zu erzeugen") mit dem jeweils zum Format passenden
+Chunk-Begriff, statt eine gemeinsame künstliche Chunk-Entität über alle
+Formate zu stülpen, die für keines davon wirklich passt.
+
+`docx_extract_text` scannt intern bis zu 10 MiB extrahierten Text (deutlich
+über der 64-KiB-Fensterbreite), damit auch ein sehr langes Dokument
+vollständig chunk-weise erreichbar bleibt, nicht nur die ersten 64 KiB.
+Ein Dokument, dessen Text selbst diese 10-MiB-Scangrenze überschreitet,
+bleibt bis dorthin lesbar (`truncated: true` markiert dann sowohl "mehr im
+aktuellen Fenster" als auch "mehr jenseits der Scangrenze").
+
+**Noch nicht umgesetzt**: eine eigene Cursor-Paginierung für `csv_inspect`/
+`xlsx_inspect` über die aktuell feste 20-Zeilen-Stichprobe hinaus (aktuell
+nur über `options.sheet` bei mehreren Arbeitsblättern navigierbar) — bei
+Bedarf ein naheliegender nächster Schritt nach demselben `offset`/`limit`-
+Muster, aber für dieses Repo aktuell kein bekanntes reales Bedürfnis
+(bisherige Live-Tests brauchten nie mehr als die Stichprobe).
 
 ## Prozessor-übergreifende Konventionen
 
