@@ -49,6 +49,7 @@ export const JobRecordSchema = z.object({
   job_id: z.string(),
   file_id: z.string(),
   processor_id: z.string(),
+  options: z.record(z.string(), z.unknown()).optional(),
   state: z.enum(["prepared", "completed", "failed"]),
   created_at: z.string(),
   completed_at: z.string().optional(),
@@ -93,6 +94,11 @@ export const FileListResultSchema = z.object({
 
 export const FileViewResultSchema = FileRecordSchema.extend({
   content: z.string().optional(),
+});
+
+export const FileVerifyResultSchema = FileRecordSchema.extend({
+  actual_sha256: z.string(),
+  matches: z.boolean(),
 });
 
 export const JobResultEnvelopeSchema = z.object({

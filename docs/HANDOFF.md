@@ -27,12 +27,13 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   dazu keinen Zugriff auf eine laufende Hub-Instanz (kein `rheinagent-audit`-
   Profil in den verfügbaren MCP-Connectoren) und hat stattdessen den
   nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
-- Vollständiger aktueller Funktionsstand: alle 15 Tools implementiert und
-  end-to-end verifiziert (Upload/Download/Rename/Process/Delete-Flow,
+- Vollständiger aktueller Funktionsstand: alle 16 Tools implementiert und
+  end-to-end verifiziert (Upload/Download/Rename/Verify/Process/Delete-Flow,
   Health/Doctor inkl. Storage-Stats+Mime-Breakdown, filterbares
-  File-/Job-Listing, Pagination, Elicitation-Bestätigung, Legacy- und
+  File-/Job-Listing, parametrisierbare Processor-Optionen (Seitenauswahl
+  bei `pdf_extract_text`), Pagination, Elicitation-Bestätigung, Legacy- und
   moderner `2026-07-28`-Protokollpfad). 5 Processor registriert
-  (Text/PDF/Image), 69 automatisierte Tests. Details: `BUILDLOG.md`
+  (Text/PDF/Image), 86 automatisierte Tests. Details: `BUILDLOG.md`
   (neuester Eintrag oben).
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
@@ -121,6 +122,34 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **`rheinagent_file_verify` (Integritäts-Check) + parametrisierbare
+  Processor-Optionen.** Zwei weitere Features:
+  1. **`rheinagent_file_verify`** (neu, 16. Tool) — liest eine Datei neu von
+     der Platte, berechnet SHA-256 neu, vergleicht gegen den bei
+     `upload_finalize` erfassten Wert. Die einzige Stelle, die Integrität
+     nach der Annahme erneut prüft (Disk-Korruption, Bit Rot auf einer
+     langlebigen Pi-SD-Karte, manuelle Eingriffe in `data/files/` außerhalb
+     dieses Produkts). Rein lesend; ein Mismatch ist **kein** `isError`
+     (dieselbe Konvention wie `health_get`s `status: "degraded"`), sondern
+     ein echter Befund im `matches`-Feld.
+  2. **Processor-Optionen** — `process_prepare` nimmt jetzt ein optionales
+     `options`-Objekt entgegen, gespeichert am `JobRecord`, unverändert an
+     den Processor durchgereicht. `pdf_extract_text` nutzt das als erstes:
+     `{"page": N}` extrahiert eine einzelne Seite statt des ganzen
+     Dokuments — der Workaround für PDFs über der 64-KiB-Ergebnisgrenze.
+     Ein unbekannter/falsch-geformter Wert scheitert als klarer Job-Fehler,
+     nie als stiller Fallback.
+  - Live end-to-end verifiziert: 2-seitige Test-PDF hochgeladen,
+    `options: {"page": 2}` liefert exakt "Page Two Text", `options` rundet
+    korrekt im `job_get`, `options: {"page": 99}` scheitert sauber als
+    Job-Fehler mit klarer Meldung. `verify` gegen unveränderte Datei
+    (`matches: true`) und nach manuellem Byte-Tampering auf der Platte
+    (`matches: false`) beide bestätigt.
+  - 17 neue automatisierte Tests (u. a. neues `test/jsonIndex.test.ts` —
+    vorher das einzige `src/lib`-Modul ganz ohne dedizierte Tests, obwohl
+    es der Persistenz-Layer unter jeder einzelnen Store-Operation ist) —
+    jetzt **16 Tools, 86 automatisierte Tests**, `npm run check`
+    fehlerfrei.
 - **Filter für `file_list`/`job_list`, Mime-Category-Storage-Breakdown.**
   Weitere Runde funktionaler Verbesserungen:
   - `rheinagent_file_list` filterbar nach `mime_category` (exakt) und

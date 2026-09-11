@@ -158,8 +158,43 @@ test("pdf_extract_text extracts the actual text content of a PDF", async () => {
     const run = getProcessor("pdf_extract_text")!;
     const result = await run({ filePath, filename: "sample.pdf", mimeCategory: "pdf" });
     assert.equal(result.page_count, 1);
+    assert.equal(result.page, null, "no options.page given -> page is null, not omitted");
     assert.equal(result.truncated, false);
     assert.match(result.extracted_text as string, /Hello Test PDF/);
+  });
+});
+
+test("pdf_extract_text honors options.page to extract a single page", async () => {
+  await withTempFile(MINIMAL_PDF, ".pdf", async (filePath) => {
+    const run = getProcessor("pdf_extract_text")!;
+    const result = await run({ filePath, filename: "sample.pdf", mimeCategory: "pdf", options: { page: 1 } });
+    assert.equal(result.page, 1);
+    assert.equal(result.page_count, 1);
+    assert.match(result.extracted_text as string, /Hello Test PDF/);
+  });
+});
+
+test("pdf_extract_text rejects an out-of-range options.page", async () => {
+  await withTempFile(MINIMAL_PDF, ".pdf", async (filePath) => {
+    const run = getProcessor("pdf_extract_text")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.pdf", mimeCategory: "pdf", options: { page: 2 } }),
+      /out of range/,
+    );
+  });
+});
+
+test("pdf_extract_text rejects a malformed options.page", async () => {
+  await withTempFile(MINIMAL_PDF, ".pdf", async (filePath) => {
+    const run = getProcessor("pdf_extract_text")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.pdf", mimeCategory: "pdf", options: { page: "one" } }),
+      /positive integer/,
+    );
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.pdf", mimeCategory: "pdf", options: { page: 0 } }),
+      /positive integer/,
+    );
   });
 });
 

@@ -24,6 +24,8 @@ import {
   getStorageStats,
   listFilesPage,
   updateJob,
+  verifyFile,
+  filePath,
 } from "../src/lib/store.js";
 import { sha256Hex, type MimeCategory } from "../src/lib/security.js";
 
@@ -152,6 +154,20 @@ test("sweepOrphanedStaging keeps staged bytes for a still-valid pending upload",
   await fs.unlink(staged).catch(() => {});
 });
 
+// --- createJob options passthrough ---
+
+test("createJob persists options and omits the field entirely when none given", async () => {
+  const f = await acceptTestFile("store-test-job-options.pdf", "x", "pdf");
+  const withOptions = await createJob(f.fileId, "pdf_extract_text", { page: 2 });
+  assert.deepEqual(withOptions.options, { page: 2 });
+
+  const withoutOptions = await createJob(f.fileId, "pdf_metadata");
+  assert.equal("options" in withoutOptions, false);
+
+  const t = await createDeleteTicket(f.fileId);
+  await applyDelete(t.deleteToken);
+});
+
 // --- job listing ---
 
 test("listJobsPage lists jobs across files and filters by file_id", async () => {
@@ -219,6 +235,37 @@ test("renameFile rejects a new filename that would change mime_category", async 
 test("renameFile rejects an unknown file_id", async () => {
   await ensureDirs();
   await assert.rejects(() => renameFile("file_00000000-0000-0000-0000-000000000000", "x.txt"), /file not found/);
+});
+
+// --- verify: integrity re-check against the recorded sha256 ---
+
+test("verifyFile reports matches:true for untouched bytes", async () => {
+  const record = await acceptTestFile("store-test-verify-ok.txt", "unchanged content");
+  const result = await verifyFile(record.fileId);
+  assert.equal(result.matches, true);
+  assert.equal(result.actualSha256, record.sha256);
+
+  const t = await createDeleteTicket(record.fileId);
+  await applyDelete(t.deleteToken);
+});
+
+test("verifyFile reports matches:false after the bytes on disk are tampered with out of band", async () => {
+  const record = await acceptTestFile("store-test-verify-tampered.txt", "original content");
+  const onDisk = await filePath(record.fileId);
+  await fs.writeFile(onDisk, "tampered content", "utf-8"); // simulates corruption/out-of-band edit
+
+  const result = await verifyFile(record.fileId);
+  assert.equal(result.matches, false);
+  assert.notEqual(result.actualSha256, record.sha256);
+
+  // restore + cleanup so applyDelete's own unlink doesn't care either way
+  const t = await createDeleteTicket(record.fileId);
+  await applyDelete(t.deleteToken);
+});
+
+test("verifyFile rejects an unknown file_id", async () => {
+  await ensureDirs();
+  await assert.rejects(() => verifyFile("file_00000000-0000-0000-0000-000000000000"), /file not found/);
 });
 
 // --- storage stats (health tool) ---

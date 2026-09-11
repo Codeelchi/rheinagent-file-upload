@@ -33,7 +33,7 @@ Fehlfunktion.
 │  Control Plane           │       │  Data Plane               │
 │  server.ts (Port 3901)   │       │  dataplane.ts (Port 3902) │
 │  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (PUT/GET)      │
-│  15 öffentliche Tools    │       │  keine MCP-Tools, kein     │
+│  16 öffentliche Tools    │       │  keine MCP-Tools, kein     │
 │  Business-/Sicherheits-  │       │  Audit, keine Business-    │
 │  logik, Audit-Aufrufe    │       │  logik — Staging-Write,    │
 │                           │       │  Download-Read, /healthz  │
@@ -170,7 +170,7 @@ Aktuell registriert:
 | `text_uppercase` | text | `transformed_text` (kompletter Inhalt, Großbuchstaben) |
 | `image_metadata` | image | `format` (`png`/`jpeg`), `width`, `height`, `size_bytes` — Dimensionen per Hand aus PNG-IHDR bzw. JPEG-SOF-Markern geparst, **keine** Bildbibliothek (kein `sharp`/`jimp`: nativ bzw. für reines Header-Lesen unnötig) |
 | `pdf_metadata` | pdf | `page_count`, `pdf_format_version`, `title`, `author` (letztere `null`, falls nicht gesetzt) |
-| `pdf_extract_text` | pdf | `extracted_text` (auf 64 KiB gekappt, wie `INLINE_CONTENT_MAX_BYTES` an anderer Stelle — Ergebnis fließt über `result_get` durch MCP-JSON zurück), `page_count`, `truncated` |
+| `pdf_extract_text` | pdf | `extracted_text` (auf 64 KiB gekappt, wie `INLINE_CONTENT_MAX_BYTES` an anderer Stelle — Ergebnis fließt über `result_get` durch MCP-JSON zurück), `page_count`, `page` (`null` = ganzes Dokument, sonst 1-indexierte Seitenzahl), `truncated` |
 
 `pdf_metadata`/`pdf_extract_text` nutzen `pdfjs-dist` (Mozillas eigener
 PDF.js-Kern) — bewusst **nicht** das populärere `pdf-parse`, das
@@ -181,6 +181,20 @@ selbst hat null Laufzeit-Abhängigkeiten. Läuft ohne `Worker` (kein
 fällt automatisch auf synchrones Parsing im Hauptthread zurück; für einen
 kurzlebigen Extraktions-Call pro Job wäre ein `worker_threads`-Worker nur
 Overhead).
+
+**Processor-Optionen (seit 2026-09-11):** `rheinagent_file_process_prepare`
+nimmt ein optionales `options`-Objekt entgegen (`z.record(z.string(),
+z.unknown())` — bewusst lose typisiert, da jeder Processor selbst
+entscheidet, was er versteht), gespeichert am `JobRecord` und bei
+`process_apply` unverändert an den Processor durchgereicht
+(`ProcessorContext.options`). Aktuell nutzt nur `pdf_extract_text` das:
+`{"page": N}` extrahiert eine einzelne, 1-indexierte Seite statt des
+gesamten Dokuments — der naheliegende Workaround für PDFs, deren
+Volltext über der 64-KiB-Ergebnisgrenze liegt. Ein Processor, der
+`options` nicht kennt, ignoriert es einfach; ein bekannter, aber
+falsch-geformter Wert (z. B. `page: 0` oder `page: "eins"`) scheitert als
+klarer Job-Fehler, nie als stiller Fallback auf "ganzes Dokument" oder
+"Seite 1".
 
 ## Öffentliche Tool-Verträge
 
@@ -236,8 +250,9 @@ erst über einen `rate limit exceeded`-Fehler zu lernen.
 | `rheinagent_file_list` | `mime_category?`, `filename_contains?`, `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
 | `rheinagent_file_rename` | `file_id`, `new_filename` | `FileRecordSchema` | idempotent | write |
+| `rheinagent_file_verify` | `file_id` | `FileVerifyResultSchema` | readOnly, idempotent | read |
 | `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
-| `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `JobRecordSchema` | — | write |
+| `rheinagent_file_process_prepare` | `file_id`, `processor_id`, `options?` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |
 | `rheinagent_file_job_get` | `job_id` | `JobRecordSchema` | readOnly, idempotent | read |
 | `rheinagent_file_job_list` | `file_id?`, `state?`, `processor_id?`, `cursor?`, `limit?` | `JobListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
@@ -266,6 +281,18 @@ per Magic-Bytes validierten Bytes (`classifyExtension()` in
 eine als `text` validierte Datei auf `.pdf` umbenennen), wird abgelehnt —
 sonst könnte ein Rename die Extension/Magic-Byte-Konsistenzprüfung aus
 `upload_finalize` im Nachhinein unterlaufen.
+
+`rheinagent_file_verify` liest die Bytes einer Datei neu von der Platte und
+berechnet ihren SHA-256 neu, verglichen mit dem bei `upload_finalize`
+erfassten Wert (`verifyFile()` in `store.ts`) — die einzige Stelle, die
+Integrität **nach** der Annahme erneut prüft; `upload_finalize` selbst
+prüft nur einmalig beim Empfang. Rein lesend, verändert nichts, unabhängig
+vom Ergebnis. Ein `matches: false` markiert das Tool bewusst **nicht** als
+`isError` — dieselbe Konvention wie bei `rheinagent_file_health_get`s
+`status: "degraded"`: das Tool ist erfolgreich gelaufen und hat einen
+echten Befund geliefert, `isError` bleibt für gescheiterte Tool-Aufrufe
+selbst reserviert, nicht für Fachdaten, die der Aufrufer aus `matches`
+lesen muss.
 
 ## Audit-/Release-Grenze
 

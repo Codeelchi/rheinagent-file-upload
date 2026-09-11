@@ -28,6 +28,7 @@ export function toWireJob(job: JobRecord) {
     job_id: job.jobId,
     file_id: job.fileId,
     processor_id: job.processorId,
+    options: job.options,
     state: job.state,
     created_at: job.createdAt,
     completed_at: job.completedAt,

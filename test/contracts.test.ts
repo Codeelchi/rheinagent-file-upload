@@ -68,6 +68,18 @@ test("toWireJob produces the snake_case JobRecordSchema shape", () => {
   assert.equal(wire.error, undefined);
 });
 
+test("toWireJob carries options through when present", () => {
+  const job: JobRecord = {
+    jobId: newJobId(),
+    fileId: newFileId(),
+    processorId: "pdf_extract_text",
+    options: { page: 3 },
+    state: "prepared",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  assert.deepEqual(toWireJob(job).options, { page: 3 });
+});
+
 test("toWireDeleteTicket produces the snake_case DeleteTicketResultSchema shape", () => {
   const ticket: DeleteTicket = {
     deleteToken: newDeleteToken(),

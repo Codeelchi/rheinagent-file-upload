@@ -40,6 +40,7 @@ import {
   sweepOrphanedStaging,
   renameFile,
   getStorageStats,
+  verifyFile,
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds, processorSupportsMimeCategory } from "./src/lib/processors.js";
@@ -52,6 +53,7 @@ import {
   UploadPrepareResultSchema,
   FileListResultSchema,
   FileViewResultSchema,
+  FileVerifyResultSchema,
   JobResultEnvelopeSchema,
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
@@ -349,6 +351,35 @@ function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "rheinagent_file_verify",
+    {
+      title: "Verify file integrity",
+      description:
+        "Re-reads a file's bytes from disk and recomputes its SHA-256, comparing against the hash recorded at upload time. Detects disk corruption or out-of-band changes to data/files/ that upload_finalize's one-time check can't catch. Read-only — makes no changes regardless of the outcome.",
+      inputSchema: z.object({ file_id: FileIdField }),
+      outputSchema: FileVerifyResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_verify", "read", async ({ file_id }) => {
+      try {
+        const { record, actualSha256, matches } = await verifyFile(file_id);
+        await auditInvocation("rheinagent_file_verify", { matches });
+        const body = { ...toWireFile(record), actual_sha256: actualSha256, matches };
+        // Not isError on a mismatch, same convention as rheinagent_file_health_get's
+        // "degraded" status: the tool ran successfully and reported a true
+        // negative finding — isError is for the tool call itself failing,
+        // not for domain data the caller needs to read from `matches`.
+        return {
+          content: [{ type: "text", text: matches ? `${file_id}: sha256 matches.` : `${file_id}: SHA-256 MISMATCH — recorded ${record.sha256}, actual ${actualSha256}` }],
+          structuredContent: body,
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
     "rheinagent_file_download_prepare",
     {
       title: "Prepare a file download",
@@ -380,12 +411,12 @@ function registerTools(server: McpServer): void {
     {
       title: "Prepare a processing job",
       description:
-        "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet. See rheinagent_file_capabilities_get's processors list for valid processor_id values.",
-      inputSchema: z.object({ file_id: FileIdField, processor_id: z.string() }),
+        "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet. See rheinagent_file_capabilities_get's processors list for valid processor_id values. options is an optional, processor-specific object (e.g. pdf_extract_text accepts {\"page\": N} to extract one page instead of the whole document) — most processors ignore it.",
+      inputSchema: z.object({ file_id: FileIdField, processor_id: z.string(), options: z.record(z.string(), z.unknown()).optional() }),
       outputSchema: JobRecordSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    guarded("rheinagent_file_process_prepare", "write", async ({ file_id, processor_id }) => {
+    guarded("rheinagent_file_process_prepare", "write", async ({ file_id, processor_id, options }) => {
       const record = await getFile(file_id);
       if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
       if (!getProcessor(processor_id)) {
@@ -400,7 +431,7 @@ function registerTools(server: McpServer): void {
           isError: true,
         };
       }
-      const job = await createJob(file_id, processor_id);
+      const job = await createJob(file_id, processor_id, options);
       await auditInvocation("rheinagent_file_process_prepare", { processor_id });
       return { content: [{ type: "text", text: `job ${job.jobId} prepared (processor ${processor_id}).` }], structuredContent: toWireJob(job) };
     }),
@@ -434,7 +465,7 @@ function registerTools(server: McpServer): void {
             metadata: { processor_id: job.processorId },
           },
           async () => {
-            const output = await processor({ filePath: await filePath(job.fileId), filename: record.filename, mimeCategory: record.mimeCategory });
+            const output = await processor({ filePath: await filePath(job.fileId), filename: record.filename, mimeCategory: record.mimeCategory, options: job.options });
             await writeJobResult(job_id, output);
             return output;
           },

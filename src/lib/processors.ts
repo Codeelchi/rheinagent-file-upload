@@ -15,6 +15,12 @@ export interface ProcessorContext {
   filePath: string;
   filename: string;
   mimeCategory: string;
+  /** Opaque, per-processor options from rheinagent_file_process_prepare's
+   * `options` input — most processors ignore this entirely. A processor
+   * that reads it is responsible for validating shape/range itself and
+   * throwing a clear error for anything it doesn't understand (the same
+   * pattern already used for the mimeCategory guard below). */
+  options?: Record<string, unknown>;
 }
 
 export type Processor = (ctx: ProcessorContext) => Promise<Record<string, unknown>>;
@@ -200,15 +206,40 @@ register("pdf_metadata", ["pdf"], async (ctx) => {
   }
 });
 
+/**
+ * Reads `options.page` (1-indexed) if present — lets a caller pull one
+ * specific page out of a PDF too long to fit under PDF_TEXT_MAX_CHARS as a
+ * whole, instead of only ever getting the first ~64 KiB of it. Returns
+ * `undefined` when no page option was given (full-document extraction,
+ * the original behavior); throws for a present-but-invalid value so a
+ * caller's mistake is a clear job failure, not a silent fallback to
+ * "extract everything" or to page 1.
+ */
+function parsePageOption(options: Record<string, unknown> | undefined): number | undefined {
+  if (!options || !("page" in options)) return undefined;
+  const page = options.page;
+  if (typeof page !== "number" || !Number.isInteger(page) || page < 1) {
+    throw new Error(`options.page must be a positive integer, got ${JSON.stringify(page)}`);
+  }
+  return page;
+}
+
 register("pdf_extract_text", ["pdf"], async (ctx) => {
   if (ctx.mimeCategory !== "pdf") {
     throw new Error("pdf_extract_text only supports PDF documents");
   }
+  const requestedPage = parsePageOption(ctx.options);
   const doc = await loadPdfDocument(ctx.filePath);
   try {
+    if (requestedPage !== undefined && requestedPage > doc.numPages) {
+      throw new Error(`options.page ${requestedPage} is out of range — this PDF has ${doc.numPages} page(s)`);
+    }
+    const firstPage = requestedPage ?? 1;
+    const lastPage = requestedPage ?? doc.numPages;
+
     const pageTexts: string[] = [];
     let charCount = 0;
-    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    for (let pageNum = firstPage; pageNum <= lastPage; pageNum++) {
       const page = await doc.getPage(pageNum);
       const content = await page.getTextContent();
       const pageText = content.items.map(pdfTextItemString).join(" ");
@@ -219,7 +250,12 @@ register("pdf_extract_text", ["pdf"], async (ctx) => {
     let extractedText = pageTexts.join("\n\n");
     const truncated = extractedText.length > PDF_TEXT_MAX_CHARS;
     if (truncated) extractedText = extractedText.slice(0, PDF_TEXT_MAX_CHARS);
-    return { extracted_text: extractedText, page_count: doc.numPages, truncated };
+    return {
+      extracted_text: extractedText,
+      page_count: doc.numPages,
+      page: requestedPage ?? null,
+      truncated,
+    };
   } finally {
     await doc.destroy();
   }

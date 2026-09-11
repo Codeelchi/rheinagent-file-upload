@@ -2,6 +2,67 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — rheinagent_file_verify, Processor-Optionen, jsonIndex-Tests
+
+Auftrag: weitere Verbesserungen/Features für den MCP überlegen und
+umsetzen. Vor der Feature-Arbeit erst eine echte Qualitätslücke
+geschlossen, dann zwei neue Features.
+
+**0. `test/jsonIndex.test.ts` (neu).** `src/lib/jsonIndex.ts` — der
+Persistenz-Layer unter jeder einzelnen `store.ts`-Operation — war das
+letzte `src/lib`-Modul ganz ohne dedizierte Tests. 9 neue Tests: Basis-
+Get/Set/Delete/Values, `mkdir(recursive)` beim ersten Write, Overwrite
+lässt andere Einträge unberührt, `delete()` auf nie existierende ID
+persistiert keine leere Datei, zwei unabhängige `JsonIndex`-Instanzen auf
+derselben Datei sehen sich gegenseitige Writes (simuliert die echte
+Control-/Data-Plane-Prozesstrennung ohne zwei OS-Prozesse), Atomic-Rename
+hinterlässt keine `.tmp-*`-Leichen, kaputtes JSON auf der Platte wirft statt
+still als leerer Index behandelt zu werden.
+
+**1. `rheinagent_file_verify`** (neu, 16. Tool) — `verifyFile()` in
+`store.ts` liest die Bytes einer Datei neu, berechnet SHA-256 neu,
+vergleicht gegen den bei `upload_finalize` erfassten Wert.
+`upload_finalize` prüft Integrität nur einmalig beim Empfang; dieses Tool
+ist die einzige Stelle, die das danach erneut tut (Disk-Korruption, Bit Rot
+auf einer langlebigen Pi-SD-Karte, ein manueller Eingriff in
+`data/files/`). Rein lesend, keine Zustandsänderung. Bewusst **kein**
+`isError` bei einem Mismatch — dieselbe Konvention wie `health_get`s
+`status: "degraded"`: der Tool-Aufruf selbst war erfolgreich, `matches:
+false` ist ein echter Befund, kein Fehler des Aufrufs.
+
+**2. Processor-Optionen.** `rheinagent_file_process_prepare` nimmt jetzt
+ein optionales `options`-Objekt (`z.record(z.string(), z.unknown())`),
+gespeichert am `JobRecord` (`options?: Record<string, unknown>`, neues
+optionales Feld, nur gesetzt wenn übergeben) und bei `process_apply`
+unverändert an `ProcessorContext.options` durchgereicht.
+`pdf_extract_text` ist der erste Nutzer: `{"page": N}` (1-indexiert)
+extrahiert eine einzelne Seite statt des gesamten Dokuments — der
+naheliegende Workaround für PDFs, deren Volltext über der
+64-KiB-Ergebnisgrenze liegt. `parsePageOption()` validiert Typ/Bereich
+und wirft für alles Ungültige einen klaren Fehler, statt still auf "ganzes
+Dokument" oder "Seite 1" zurückzufallen; ein außerhalb des Seitenbereichs
+liegender Wert scheitert ebenso klar nach dem Laden des Dokuments (dann ist
+`doc.numPages` bekannt). Ergebnis trägt jetzt zusätzlich `page` (`null` =
+ganzes Dokument).
+
+**Getestet:** Live end-to-end gegen beide laufenden Prozesse — 2-seitige
+Test-PDF hochgeladen, `process_prepare` mit `options: {"page": 2}` →
+`process_apply` liefert exakt `"Page Two Text"` (nicht Seite 1), `options`
+rundet korrekt in `job_get`s Antwort, `options: {"page": 99}` scheitert
+sauber als Job-`state: "failed"` mit `"out of range"`-Meldung.
+`rheinagent_file_verify` gegen unveränderte Datei → `matches: true`; nach
+direktem Byte-Anhängen an die Datei auf der Platte (`data/files/<file_id>`)
+→ `matches: false`, unterschiedliche `actual_sha256`, kein `isError`. 17
+neue automatisierte Tests (9× `jsonIndex`, 3× `verifyFile`, 4×
+`pdf_extract_text`-Optionen, 1× `createJob`-Options-Passthrough) — jetzt
+**16 Tools, 86 automatisierte Tests, alle grün**; `npm run check`
+fehlerfrei.
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (Processor-Optionen-Absatz,
+`pdf_extract_text`-Tabellenzeile, `verify`-Absatz, Tool-Vertragstabelle,
+Diagramm 15→16 Tools), `README.md`, `docs/VERSIONING.md`,
+`docs/HANDOFF.md`.
+
 ## 2026-09-11 — Filter für file_list/job_list, Mime-Category-Storage-Breakdown
 
 Auftrag: Funktionen des MCP weiter verbessern (Fortsetzung der letzten

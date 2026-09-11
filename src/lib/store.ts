@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { JsonIndex } from "./jsonIndex.js";
 import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
-import { safeJoin, assertNotSymlink, classifyExtension, type MimeCategory } from "./security.js";
+import { safeJoin, assertNotSymlink, classifyExtension, sha256Hex, type MimeCategory } from "./security.js";
 
 const DATA_DIR = path.join(import.meta.dirname, "..", "..", "data");
 const STAGING_DIR = path.join(DATA_DIR, "staging");
@@ -36,6 +36,10 @@ export interface JobRecord {
   jobId: string;
   fileId: string;
   processorId: string;
+  /** Opaque, processor-specific options (e.g. pdf_extract_text's `page`).
+   * Validated by the processor itself when the job runs, not here — this
+   * store layer only persists whatever process_prepare's caller passed. */
+  options?: Record<string, unknown>;
   state: "prepared" | "completed" | "failed";
   createdAt: string;
   completedAt?: string;
@@ -268,6 +272,24 @@ export async function renameFile(fileId: string, newFilename: string): Promise<F
   return updated;
 }
 
+/**
+ * Re-reads a file's bytes from disk and recomputes its SHA-256, comparing
+ * against the hash recorded at `upload_finalize` time. `upload_finalize`
+ * only ever checks integrity once, at acceptance — nothing afterwards
+ * re-verifies that the bytes on disk still match what was accepted (disk
+ * corruption, an operator editing `data/files/` by hand outside this
+ * product, bit rot on a long-lived Pi SD card). This is read-only and
+ * makes no changes regardless of the outcome — callers decide what to do
+ * with a mismatch (this product has no automated remediation for it).
+ */
+export async function verifyFile(fileId: string): Promise<{ record: FileRecord; actualSha256: string; matches: boolean }> {
+  const record = await files.get(fileId);
+  if (!record) throw new Error("file not found");
+  const buf = await fs.readFile(await filePath(fileId));
+  const actualSha256 = sha256Hex(buf);
+  return { record, actualSha256, matches: actualSha256 === record.sha256 };
+}
+
 /** Live disk-usage snapshot for the health tool — counts every accepted
  * file (including ones currently `pendingDelete`, since their bytes are
  * still on disk until `delete_apply` actually runs) plus how many bytes
@@ -368,11 +390,12 @@ export async function applyDelete(deleteToken: string): Promise<FileRecord> {
   return record;
 }
 
-export async function createJob(fileId: string, processorId: string): Promise<JobRecord> {
+export async function createJob(fileId: string, processorId: string, options?: Record<string, unknown>): Promise<JobRecord> {
   const job: JobRecord = {
     jobId: newJobId(),
     fileId,
     processorId,
+    ...(options ? { options } : {}),
     state: "prepared",
     createdAt: new Date().toISOString(),
   };
