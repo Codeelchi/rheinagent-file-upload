@@ -127,6 +127,33 @@ export async function listFiles(): Promise<FileRecord[]> {
   return all.filter((f) => !f.pendingDelete);
 }
 
+const DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * Deterministic, cursor-paginated file listing — mirrors the MCP
+ * `tools/list`-style pagination utility (cursor/nextCursor) so
+ * `rheinagent_file_list` doesn't grow unboundedly through MCP JSON as the
+ * accepted-files set grows. Sort order (createdAt, then fileId as a
+ * tiebreaker) is fixed so the same cursor always resumes at the same point
+ * even if new files are uploaded concurrently.
+ */
+export async function listFilesPage(
+  cursor?: string,
+  limit: number = DEFAULT_PAGE_SIZE,
+): Promise<{ files: FileRecord[]; nextCursor?: string }> {
+  const all = (await listFiles()).sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.fileId.localeCompare(b.fileId),
+  );
+  let startIndex = 0;
+  if (cursor) {
+    const idx = all.findIndex((f) => f.fileId === cursor);
+    startIndex = idx >= 0 ? idx + 1 : 0;
+  }
+  const page = all.slice(startIndex, startIndex + limit);
+  const nextCursor = startIndex + limit < all.length ? page[page.length - 1]?.fileId : undefined;
+  return { files: page, nextCursor };
+}
+
 export async function getFile(fileId: string): Promise<FileRecord | undefined> {
   assertOpaqueId(fileId);
   return files.get(fileId);

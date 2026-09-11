@@ -6,6 +6,26 @@ GitHub-Repo `Codeelchi/rheinagent-file-upload`, Branch `main`. Entwicklung
 ausschließlich hier; Distribution läuft über die zentrale Pipeline
 (siehe [VERSIONING.md](VERSIONING.md)), nicht über dieses Repo direkt.
 
+## MCP-SDK
+
+Seit 2026-09-11 echte Protokoll-`2026-07-28`-Konformität: `@modelcontextprotocol/server`
++ `@modelcontextprotocol/node` (v2-Paketlinie, nicht mehr das ältere
+`@modelcontextprotocol/sdk`, dessen `SUPPORTED_PROTOCOL_VERSIONS` nur bis
+`2025-11-25` reichte). `createMcpHandler()` + `toNodeHandler()` bedienen
+**beide Epochen** über einen einzigen Endpunkt: alte `initialize`-Handshakes
+(2025-06-18 o.ä., Legacy-Shim) laufen weiterhin unverändert, während echte
+`2026-07-28`-Clients das stateless Pro-Request-`_meta`-Modell nutzen (kein
+Session-Handshake, jeder Request trägt `io.modelcontextprotocol/protocolVersion`
++ `clientCapabilities` selbst). Jeder Tool deklariert jetzt `outputSchema`
+(zod, automatisch zu JSON Schema konvertiert) und `annotations`
+(`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`).
+
+**Für HTTP-Clients wichtig:** Streamable-HTTP-Requests im modernen Modus
+brauchen zusätzlich die Header `Mcp-Method` (= `params.method`) und bei
+`tools/call` `Mcp-Name` (= `params.name`) — eine SEP-2243-Validierung gegen
+Smuggling. Fehlen sie, kommt `-32020 HeaderMismatch` zurück, keine stille
+Fehlfunktion.
+
 ## Runtime-Layer
 
 ```text
@@ -77,19 +97,28 @@ Text-Dokumente, siehe [SECURITY.md](SECURITY.md) zur MIME-Kategorisierung).
 
 ## Öffentliche Tool-Verträge
 
-| Tool | Input | Output (`structuredContent.action`) |
-|---|---|---|
-| `rheinagent_file_capabilities_get` | — | Capability-Objekt |
-| `rheinagent_file_upload_prepare` | `filename`, `declared_size_bytes` | `{upload_id, upload_url, expires_at}` |
-| `rheinagent_file_upload_finalize` | `upload_id` | `action: "uploaded"`, `FileRecord` |
-| `rheinagent_file_list` | — | `action: "list"`, `FileRecord[]` |
-| `rheinagent_file_get` | `file_id` | `action: "view"`, `FileRecord` (+`content` bei kleinen Textdateien) |
-| `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `action: "job_prepared"`, `JobRecord` |
-| `rheinagent_file_process_apply` | `job_id` | `action: "job_completed"`, Processor-Ergebnis |
-| `rheinagent_file_job_get` | `job_id` | `action: "job_status"`, `JobRecord` |
-| `rheinagent_file_result_get` | `job_id` | `action: "job_result"`, Processor-Ergebnis |
-| `rheinagent_file_delete_prepare` | `file_id` | `action: "delete_prepared"`, `{delete_token, file_id}` |
-| `rheinagent_file_delete_apply` | `delete_token` | `action: "list"`, verbleibende `FileRecord[]` |
+Jedes Tool deklariert ein zod-`outputSchema` (siehe `src/lib/schemas.ts`),
+das `structuredContent` beschreibt — Clients können das laut Spec gegen
+`structuredContent` validieren, statt es blind zu vertrauen.
+
+| Tool | Input | `structuredContent` (Schema) | Annotations | Rate-Limit-Klasse |
+|---|---|---|---|---|
+| `rheinagent_file_capabilities_get` | — | `CapabilitiesSchema` | readOnly, idempotent | read |
+| `rheinagent_file_upload_prepare` | `filename`, `declared_size_bytes` | `UploadPrepareResultSchema` | — | write |
+| `rheinagent_file_upload_finalize` | `upload_id` | `FileRecordSchema` | — | critical |
+| `rheinagent_file_list` | `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
+| `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
+| `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `JobRecordSchema` | — | write |
+| `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |
+| `rheinagent_file_job_get` | `job_id` | `JobRecordSchema` | readOnly, idempotent | read |
+| `rheinagent_file_result_get` | `job_id` | `JobResultEnvelopeSchema` | readOnly, idempotent | read |
+| `rheinagent_file_delete_prepare` | `file_id` | `DeleteTicketResultSchema` | — | write |
+| `rheinagent_file_delete_apply` | `delete_token` | `FileListResultSchema` (verbleibende Dateien) | **destructiveHint: true**, verlangt Elicitation-Bestätigung | critical |
+
+`rheinagent_file_list` ist cursor-paginiert (`next_cursor` in der Antwort,
+als `cursor` beim nächsten Aufruf mitgeben) — wächst dadurch nicht
+unbegrenzt durch MCP-JSON, selbst bei vielen akzeptierten Dateien. Details
+zu Rate-Limiting und der Löschbestätigung: [SECURITY.md](SECURITY.md).
 
 ## Audit-/Release-Grenze
 

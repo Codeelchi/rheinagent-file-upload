@@ -1,7 +1,15 @@
-console.log("Starting RheinAgent File Upload MCP control plane...");
+console.log("Starting RheinAgent File Upload MCP control plane (protocol 2026-07-28)...");
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+  McpServer,
+  createMcpHandler,
+  inputRequired,
+  acceptedContent,
+  type ServerContext,
+  type CallToolResult,
+  type InputRequiredResult,
+} from "@modelcontextprotocol/server";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import cors from "cors";
 import express from "express";
 import fs from "node:fs/promises";
@@ -16,7 +24,7 @@ import {
   consumePendingUpload,
   stagingPath,
   finalizeFile,
-  listFiles,
+  listFilesPage,
   getFile,
   filePath,
   createDeleteTicket,
@@ -29,278 +37,394 @@ import {
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds } from "./src/lib/processors.js";
+import { checkRateLimit, RateLimitExceededError, type WeightClass } from "./src/lib/rateLimit.js";
+import { createLogger } from "./src/lib/logging.js";
+import {
+  FileRecordSchema,
+  JobRecordSchema,
+  CapabilitiesSchema,
+  UploadPrepareResultSchema,
+  FileListResultSchema,
+  FileViewResultSchema,
+  JobResultEnvelopeSchema,
+  DeleteTicketResultSchema,
+} from "./src/lib/schemas.js";
 
-const server = new McpServer({ name: "RheinAgent File Upload MCP", version: "0.1.0" });
+const logger = createLogger("rheinagent-file-upload.control-plane");
 
 // Inline content is only returned for small, text-category files. Anything
 // larger stays on the data plane — this keeps large binaries out of MCP
 // JSON entirely, per the architecture brief.
 const INLINE_CONTENT_MAX_BYTES = 64 * 1024;
 
-server.registerTool(
-  "rheinagent_file_capabilities_get",
-  {
-    title: "Capabilities",
-    description: "Returns protocol version, package/audit/health profiles, limits and registered processors.",
-    inputSchema: {},
-  },
-  async () => {
-    await auditInvocation("rheinagent_file_capabilities_get");
-    return { content: [{ type: "text", text: JSON.stringify(getCapabilities()) }], structuredContent: getCapabilities() };
-  },
-);
+type ToolReturn = CallToolResult | InputRequiredResult;
 
-server.registerTool(
-  "rheinagent_file_upload_prepare",
-  {
-    title: "Prepare file upload",
-    description:
-      "Declares an intended upload (filename, declared size) and returns an opaque upload_id plus the data-plane URL to PUT the raw bytes to. No file bytes are exchanged via MCP JSON.",
-    inputSchema: { filename: z.string().min(1), declared_size_bytes: z.number().int().positive() },
-  },
-  async ({ filename, declared_size_bytes }) => {
-    if (declared_size_bytes > MAX_UPLOAD_BYTES) {
-      return { content: [{ type: "text", text: `declared_size_bytes exceeds max_upload_bytes (${MAX_UPLOAD_BYTES})` }], isError: true };
-    }
-    if (classifyExtension(filename) === null) {
-      return { content: [{ type: "text", text: `extension of "${filename}" is not allowed` }], isError: true };
-    }
-    const pending = await createPendingUpload(filename, declared_size_bytes);
-    await auditInvocation("rheinagent_file_upload_prepare", {
-      mime_category: classifyExtension(filename) ?? "unknown",
-      declared_size_bytes,
-    });
-    const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
-    const body = {
-      upload_id: pending.uploadId,
-      upload_url: `http://localhost:${dataplanePort}/upload/${pending.uploadId}`,
-      expires_at: pending.expiresAt,
-    };
-    return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_upload_finalize",
-  {
-    title: "Finalize file upload",
-    description:
-      "Validates the staged bytes for a previously prepared upload_id (size, magic-byte sniff vs declared extension, hash) and atomically moves them into accepted storage.",
-    inputSchema: { upload_id: z.string() },
-  },
-  async ({ upload_id }) => {
-    const pending = await getPendingUpload(upload_id);
-    if (!pending) {
-      return { content: [{ type: "text", text: "upload_id unknown or expired" }], isError: true };
-    }
-    const staged = await stagingPath(upload_id);
-    let buf: Buffer;
+/**
+ * Wraps every tool handler with rate limiting (MCP spec: servers MUST rate
+ * limit tool invocations) and structured logging, so individual handlers
+ * below stay focused on business logic. Limiting is per-tool-name, not
+ * per-client — see src/lib/rateLimit.ts for why that's the right
+ * granularity under the stateless 2026-07-28 model.
+ */
+function guarded<A>(
+  toolName: string,
+  weightClass: WeightClass,
+  handler: (args: A, ctx: ServerContext) => Promise<ToolReturn>,
+) {
+  return async (args: A, ctx: ServerContext): Promise<ToolReturn> => {
     try {
-      buf = await fs.readFile(staged);
-    } catch {
-      return { content: [{ type: "text", text: "no staged bytes found for this upload_id (PUT to upload_url first)" }], isError: true };
+      checkRateLimit(toolName, weightClass);
+    } catch (err) {
+      if (err instanceof RateLimitExceededError) {
+        logger.warning(`rate limit exceeded`, { tool: toolName, weight_class: weightClass });
+        return { content: [{ type: "text", text: err.message }], isError: true };
+      }
+      throw err;
     }
+    try {
+      return await handler(args, ctx);
+    } catch (err) {
+      logger.error(`tool handler threw`, { tool: toolName });
+      return { content: [{ type: "text", text: `internal error in ${toolName}: ${err}` }], isError: true };
+    }
+  };
+}
 
-    const declaredCategory = classifyExtension(pending.declaredFilename);
-    const sniffedCategory = sniffMimeCategory(buf);
-    if (declaredCategory === null || sniffedCategory !== declaredCategory) {
-      await fs.unlink(staged).catch(() => {});
-      await consumePendingUpload(upload_id);
-      return {
-        content: [{ type: "text", text: `rejected: declared extension category "${declaredCategory}" does not match sniffed content "${sniffedCategory}"` }],
-        isError: true,
+function registerTools(server: McpServer): void {
+  server.registerTool(
+    "rheinagent_file_capabilities_get",
+    {
+      title: "Capabilities",
+      description: "Returns protocol version, package/audit/health profiles, limits and registered processors.",
+      inputSchema: z.object({}),
+      outputSchema: CapabilitiesSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_capabilities_get", "read", async () => {
+      await auditInvocation("rheinagent_file_capabilities_get");
+      const caps = getCapabilities();
+      return { content: [{ type: "text", text: JSON.stringify(caps) }], structuredContent: caps };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_upload_prepare",
+    {
+      title: "Prepare file upload",
+      description:
+        "Declares an intended upload (filename, declared size) and returns an opaque upload_id plus the data-plane URL to PUT the raw bytes to. No file bytes are exchanged via MCP JSON.",
+      inputSchema: z.object({ filename: z.string().min(1), declared_size_bytes: z.number().int().positive() }),
+      outputSchema: UploadPrepareResultSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_upload_prepare", "write", async ({ filename, declared_size_bytes }) => {
+      if (declared_size_bytes > MAX_UPLOAD_BYTES) {
+        return { content: [{ type: "text", text: `declared_size_bytes exceeds max_upload_bytes (${MAX_UPLOAD_BYTES})` }], isError: true };
+      }
+      if (classifyExtension(filename) === null) {
+        return { content: [{ type: "text", text: `extension of "${filename}" is not allowed` }], isError: true };
+      }
+      const pending = await createPendingUpload(filename, declared_size_bytes);
+      await auditInvocation("rheinagent_file_upload_prepare", {
+        mime_category: classifyExtension(filename) ?? "unknown",
+        declared_size_bytes,
+      });
+      const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
+      const body = {
+        upload_id: pending.uploadId,
+        upload_url: `http://localhost:${dataplanePort}/upload/${pending.uploadId}`,
+        expires_at: pending.expiresAt,
       };
-    }
-    if (buf.length > MAX_UPLOAD_BYTES) {
-      await fs.unlink(staged).catch(() => {});
-      await consumePendingUpload(upload_id);
-      return { content: [{ type: "text", text: "rejected: staged bytes exceed max_upload_bytes" }], isError: true };
-    }
+      return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
+    }),
+  );
 
-    const sha256 = sha256Hex(buf);
-    const record = await auditCriticalWrite(
-      {
-        action: "file.upload.finalize",
-        classification: "WRITE",
-        allowedMetadataKeys: ["mime_category", "final_size_bytes"],
-        metadata: { mime_category: sniffedCategory, final_size_bytes: buf.length },
-      },
-      () => finalizeFile(upload_id, { filename: pending.declaredFilename, sizeBytes: buf.length, mimeCategory: sniffedCategory, sha256 }),
-    );
-    await consumePendingUpload(upload_id);
+  server.registerTool(
+    "rheinagent_file_upload_finalize",
+    {
+      title: "Finalize file upload",
+      description:
+        "Validates the staged bytes for a previously prepared upload_id (size, magic-byte sniff vs declared extension, hash) and atomically moves them into accepted storage.",
+      inputSchema: z.object({ upload_id: z.string() }),
+      outputSchema: FileRecordSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_upload_finalize", "critical", async ({ upload_id }) => {
+      const pending = await getPendingUpload(upload_id);
+      if (!pending) {
+        return { content: [{ type: "text", text: "upload_id unknown or expired" }], isError: true };
+      }
+      const staged = await stagingPath(upload_id);
+      let buf: Buffer;
+      try {
+        buf = await fs.readFile(staged);
+      } catch {
+        return { content: [{ type: "text", text: "no staged bytes found for this upload_id (PUT to upload_url first)" }], isError: true };
+      }
 
-    return {
-      content: [{ type: "text", text: `"${record.filename}" accepted as ${record.fileId} (${record.sizeBytes} bytes).` }],
-      structuredContent: { action: "uploaded", ...record },
-    };
-  },
-);
+      const declaredCategory = classifyExtension(pending.declaredFilename);
+      const sniffedCategory = sniffMimeCategory(buf);
+      if (declaredCategory === null || sniffedCategory !== declaredCategory) {
+        await fs.unlink(staged).catch(() => {});
+        await consumePendingUpload(upload_id);
+        return {
+          content: [{ type: "text", text: `rejected: declared extension category "${declaredCategory}" does not match sniffed content "${sniffedCategory}"` }],
+          isError: true,
+        };
+      }
+      if (buf.length > MAX_UPLOAD_BYTES) {
+        await fs.unlink(staged).catch(() => {});
+        await consumePendingUpload(upload_id);
+        return { content: [{ type: "text", text: "rejected: staged bytes exceed max_upload_bytes" }], isError: true };
+      }
 
-server.registerTool(
-  "rheinagent_file_list",
-  { title: "List files", description: "Lists accepted files (metadata only).", inputSchema: {} },
-  async () => {
-    const list = await listFiles();
-    await auditInvocation("rheinagent_file_list", { result_count: list.length });
-    return { content: [{ type: "text", text: `${list.length} file(s).` }], structuredContent: { action: "list", files: list } };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_get",
-  {
-    title: "Get file metadata (and small text content inline)",
-    description:
-      "Returns metadata for a file_id. For small text-category files, content is inlined; larger or binary files are metadata-only (download via a future data-plane endpoint, not via MCP JSON).",
-    inputSchema: { file_id: z.string() },
-  },
-  async ({ file_id }) => {
-    const record = await getFile(file_id);
-    if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
-    await auditInvocation("rheinagent_file_get");
-    let content: string | undefined;
-    if (record.mimeCategory === "text" && record.sizeBytes <= INLINE_CONTENT_MAX_BYTES) {
-      content = await fs.readFile(await filePath(file_id), "utf-8");
-    }
-    return {
-      content: [{ type: "text", text: content ?? `${record.filename} (${record.sizeBytes} bytes, ${record.mimeCategory})` }],
-      structuredContent: { action: "view", ...record, content },
-    };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_process_prepare",
-  {
-    title: "Prepare a processing job",
-    description: "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet.",
-    inputSchema: { file_id: z.string(), processor_id: z.string() },
-  },
-  async ({ file_id, processor_id }) => {
-    const record = await getFile(file_id);
-    if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
-    if (!getProcessor(processor_id)) {
-      return { content: [{ type: "text", text: `unknown processor_id. Registered: ${listProcessorIds().join(", ")}` }], isError: true };
-    }
-    const job = await createJob(file_id, processor_id);
-    await auditInvocation("rheinagent_file_process_prepare", { processor_id });
-    return { content: [{ type: "text", text: `job ${job.jobId} prepared (processor ${processor_id}).` }], structuredContent: { action: "job_prepared", ...job } };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_process_apply",
-  {
-    title: "Apply a processing job",
-    description: "Runs the registered processor for a prepared job_id and atomically stores the result.",
-    inputSchema: { job_id: z.string() },
-  },
-  async ({ job_id }) => {
-    const job = await getJob(job_id);
-    if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
-    if (job.state !== "prepared") {
-      return { content: [{ type: "text", text: `job ${job_id} is already ${job.state}` }], isError: true };
-    }
-    const record = await getFile(job.fileId);
-    if (!record) return { content: [{ type: "text", text: `file ${job.fileId} for this job no longer exists` }], isError: true };
-    const processor = getProcessor(job.processorId)!;
-
-    try {
-      const resultData = await auditCriticalWrite(
-        {
-          action: "file.process.apply",
-          classification: "WRITE",
-          allowedMetadataKeys: ["processor_id"],
-          metadata: { processor_id: job.processorId },
-        },
-        async () => {
-          const output = await processor({ filePath: await filePath(job.fileId), filename: record.filename, mimeCategory: record.mimeCategory });
-          await writeJobResult(job_id, output);
-          return output;
-        },
-      );
-      await updateJob(job_id, { state: "completed", completedAt: new Date().toISOString() });
-      return { content: [{ type: "text", text: `job ${job_id} completed.` }], structuredContent: { action: "job_completed", job_id, result: resultData } };
-    } catch (err) {
-      await updateJob(job_id, { state: "failed", completedAt: new Date().toISOString(), error: String(err) });
-      return { content: [{ type: "text", text: `job ${job_id} failed: ${err}` }], isError: true };
-    }
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_job_get",
-  { title: "Get job status", description: "Returns the current state of a processing job.", inputSchema: { job_id: z.string() } },
-  async ({ job_id }) => {
-    const job = await getJob(job_id);
-    if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
-    await auditInvocation("rheinagent_file_job_get");
-    return { content: [{ type: "text", text: `job ${job_id}: ${job.state}` }], structuredContent: { action: "job_status", ...job } };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_result_get",
-  { title: "Get job result", description: "Returns the stored result of a completed processing job.", inputSchema: { job_id: z.string() } },
-  async ({ job_id }) => {
-    const result = await readJobResult(job_id);
-    if (result === undefined) return { content: [{ type: "text", text: `no result for job ${job_id}` }], isError: true };
-    await auditInvocation("rheinagent_file_result_get");
-    return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: { action: "job_result", job_id, result } };
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_delete_prepare",
-  {
-    title: "Prepare file deletion",
-    description: "Marks a file pending-delete and returns a delete_token. The file is not removed until delete_apply is called with this token.",
-    inputSchema: { file_id: z.string() },
-  },
-  async ({ file_id }) => {
-    try {
-      const ticket = await createDeleteTicket(file_id);
-      await auditInvocation("rheinagent_file_delete_prepare");
-      return { content: [{ type: "text", text: `delete_token ${ticket.deleteToken} prepared for ${file_id}.` }], structuredContent: { action: "delete_prepared", ...ticket } };
-    } catch (err) {
-      return { content: [{ type: "text", text: String(err) }], isError: true };
-    }
-  },
-);
-
-server.registerTool(
-  "rheinagent_file_delete_apply",
-  {
-    title: "Apply file deletion",
-    description: "Permanently removes the file associated with a delete_token from accepted storage.",
-    inputSchema: { delete_token: z.string() },
-  },
-  async ({ delete_token }) => {
-    try {
+      const sha256 = sha256Hex(buf);
       const record = await auditCriticalWrite(
-        { action: "file.delete.apply", classification: "DELETE", allowedMetadataKeys: [] },
-        () => applyDelete(delete_token),
+        {
+          action: "file.upload.finalize",
+          classification: "WRITE",
+          allowedMetadataKeys: ["mime_category", "final_size_bytes"],
+          metadata: { mime_category: sniffedCategory, final_size_bytes: buf.length },
+        },
+        () => finalizeFile(upload_id, { filename: pending.declaredFilename, sizeBytes: buf.length, mimeCategory: sniffedCategory, sha256 }),
       );
-      const list = await listFiles();
+      await consumePendingUpload(upload_id);
+      logger.notice("file accepted", { tool: "rheinagent_file_upload_finalize" });
+
       return {
-        content: [{ type: "text", text: `"${record.filename}" deleted.` }],
-        structuredContent: { action: "list", files: list },
+        content: [{ type: "text", text: `"${record.filename}" accepted as ${record.fileId} (${record.sizeBytes} bytes).` }],
+        structuredContent: record,
       };
-    } catch (err) {
-      return { content: [{ type: "text", text: String(err) }], isError: true };
-    }
-  },
-);
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_list",
+    {
+      title: "List files",
+      description: "Lists accepted files (metadata only), paginated via cursor/next_cursor.",
+      inputSchema: z.object({ cursor: z.string().optional(), limit: z.number().int().positive().max(200).optional() }),
+      outputSchema: FileListResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_list", "read", async ({ cursor, limit }) => {
+      const page = await listFilesPage(cursor, limit);
+      await auditInvocation("rheinagent_file_list", { result_count: page.files.length });
+      const body = { files: page.files, next_cursor: page.nextCursor };
+      return { content: [{ type: "text", text: `${page.files.length} file(s).` }], structuredContent: body };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_get",
+    {
+      title: "Get file metadata (and small text content inline)",
+      description:
+        "Returns metadata for a file_id. For small text-category files, content is inlined; larger or binary files are metadata-only (download via a future data-plane endpoint, not via MCP JSON).",
+      inputSchema: z.object({ file_id: z.string() }),
+      outputSchema: FileViewResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_get", "read", async ({ file_id }) => {
+      const record = await getFile(file_id);
+      if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
+      await auditInvocation("rheinagent_file_get");
+      let content: string | undefined;
+      if (record.mimeCategory === "text" && record.sizeBytes <= INLINE_CONTENT_MAX_BYTES) {
+        content = await fs.readFile(await filePath(file_id), "utf-8");
+      }
+      const body = { ...record, content };
+      return {
+        content: [{ type: "text", text: content ?? `${record.filename} (${record.sizeBytes} bytes, ${record.mimeCategory})` }],
+        structuredContent: body,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_process_prepare",
+    {
+      title: "Prepare a processing job",
+      description: "Creates a job for a registered server-side processor against a file_id. Does not run the processor yet.",
+      inputSchema: z.object({ file_id: z.string(), processor_id: z.string() }),
+      outputSchema: JobRecordSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_process_prepare", "write", async ({ file_id, processor_id }) => {
+      const record = await getFile(file_id);
+      if (!record) return { content: [{ type: "text", text: `file ${file_id} not found` }], isError: true };
+      if (!getProcessor(processor_id)) {
+        return { content: [{ type: "text", text: `unknown processor_id. Registered: ${listProcessorIds().join(", ")}` }], isError: true };
+      }
+      const job = await createJob(file_id, processor_id);
+      await auditInvocation("rheinagent_file_process_prepare", { processor_id });
+      return { content: [{ type: "text", text: `job ${job.jobId} prepared (processor ${processor_id}).` }], structuredContent: job };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_process_apply",
+    {
+      title: "Apply a processing job",
+      description: "Runs the registered processor for a prepared job_id and atomically stores the result.",
+      inputSchema: z.object({ job_id: z.string() }),
+      outputSchema: JobResultEnvelopeSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_process_apply", "critical", async ({ job_id }) => {
+      const job = await getJob(job_id);
+      if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
+      if (job.state !== "prepared") {
+        return { content: [{ type: "text", text: `job ${job_id} is already ${job.state}` }], isError: true };
+      }
+      const record = await getFile(job.fileId);
+      if (!record) return { content: [{ type: "text", text: `file ${job.fileId} for this job no longer exists` }], isError: true };
+      const processor = getProcessor(job.processorId)!;
+
+      try {
+        const resultData = await auditCriticalWrite(
+          {
+            action: "file.process.apply",
+            classification: "WRITE",
+            allowedMetadataKeys: ["processor_id"],
+            metadata: { processor_id: job.processorId },
+          },
+          async () => {
+            const output = await processor({ filePath: await filePath(job.fileId), filename: record.filename, mimeCategory: record.mimeCategory });
+            await writeJobResult(job_id, output);
+            return output;
+          },
+        );
+        await updateJob(job_id, { state: "completed", completedAt: new Date().toISOString() });
+        const body = { job_id, result: resultData };
+        return { content: [{ type: "text", text: `job ${job_id} completed.` }], structuredContent: body };
+      } catch (err) {
+        await updateJob(job_id, { state: "failed", completedAt: new Date().toISOString(), error: String(err) });
+        return { content: [{ type: "text", text: `job ${job_id} failed: ${err}` }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_job_get",
+    {
+      title: "Get job status",
+      description: "Returns the current state of a processing job.",
+      inputSchema: z.object({ job_id: z.string() }),
+      outputSchema: JobRecordSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_job_get", "read", async ({ job_id }) => {
+      const job = await getJob(job_id);
+      if (!job) return { content: [{ type: "text", text: `job ${job_id} not found` }], isError: true };
+      await auditInvocation("rheinagent_file_job_get");
+      return { content: [{ type: "text", text: `job ${job_id}: ${job.state}` }], structuredContent: job };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_result_get",
+    {
+      title: "Get job result",
+      description: "Returns the stored result of a completed processing job.",
+      inputSchema: z.object({ job_id: z.string() }),
+      outputSchema: JobResultEnvelopeSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_result_get", "read", async ({ job_id }) => {
+      const result = await readJobResult(job_id);
+      if (result === undefined) return { content: [{ type: "text", text: `no result for job ${job_id}` }], isError: true };
+      await auditInvocation("rheinagent_file_result_get");
+      const body = { job_id, result: result as Record<string, unknown> };
+      return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: body };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_delete_prepare",
+    {
+      title: "Prepare file deletion",
+      description: "Marks a file pending-delete and returns a delete_token. The file is not removed until delete_apply is called with this token.",
+      inputSchema: z.object({ file_id: z.string() }),
+      outputSchema: DeleteTicketResultSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_delete_prepare", "write", async ({ file_id }) => {
+      try {
+        const ticket = await createDeleteTicket(file_id);
+        await auditInvocation("rheinagent_file_delete_prepare");
+        return { content: [{ type: "text", text: `delete_token ${ticket.deleteToken} prepared for ${file_id}.` }], structuredContent: ticket };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_delete_apply",
+    {
+      title: "Apply file deletion",
+      description:
+        "Permanently removes the file associated with a delete_token from accepted storage. Asks for explicit confirmation before deleting (multi-round-trip elicitation) since this is a destructive, irreversible operation.",
+      inputSchema: z.object({ delete_token: z.string() }),
+      outputSchema: FileListResultSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    guarded("rheinagent_file_delete_apply", "critical", async ({ delete_token }, ctx) => {
+      const confirmed = acceptedContent<{ confirm: boolean }>(ctx.mcpReq.inputResponses, "confirm");
+      if (!confirmed?.confirm) {
+        return inputRequired({
+          inputRequests: {
+            confirm: inputRequired.elicit({
+              message: "This permanently deletes the file. Confirm deletion?",
+              requestedSchema: {
+                type: "object",
+                properties: { confirm: { type: "boolean" } },
+                required: ["confirm"],
+              },
+            }),
+          },
+        });
+      }
+      try {
+        const record = await auditCriticalWrite(
+          { action: "file.delete.apply", classification: "DELETE", allowedMetadataKeys: [] },
+          () => applyDelete(delete_token),
+        );
+        logger.notice("file deleted", { tool: "rheinagent_file_delete_apply" });
+        const page = await listFilesPage();
+        return {
+          content: [{ type: "text", text: `"${record.filename}" deleted.` }],
+          structuredContent: { files: page.files, next_cursor: page.nextCursor },
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+}
 
 const expressApp = express();
 expressApp.use(cors());
 expressApp.use(express.json());
 
-expressApp.post("/mcp", async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-  res.on("close", () => transport.close());
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+const mcpHandler = createMcpHandler(
+  () => {
+    const server = new McpServer({ name: "RheinAgent File Upload MCP", version: "0.2.0" });
+    registerTools(server);
+    return server;
+  },
+  {
+    onerror: (err) => logger.error("mcp handler error", { message: String(err) }),
+  },
+);
+const nodeHandler = toNodeHandler(mcpHandler);
+
+expressApp.all("/mcp", (req, res) => {
+  nodeHandler(req, res, req.body).catch((err) => {
+    logger.error("unhandled error in /mcp handler", { message: String(err) });
+    if (!res.destroyed) res.end();
+  });
 });
 
 const PORT = 3901;

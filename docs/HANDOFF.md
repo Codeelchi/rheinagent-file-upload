@@ -91,6 +91,26 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 - **Keine Mandanten-/Nutzertrennung** — einzige, geteilte Namespace pro
   Instanz (siehe [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md)).
 
+## 2026-09-11 erledigt (vorher hier offen gelistet)
+
+- **SDK-Migration auf Protokoll `2026-07-28`** — `@modelcontextprotocol/server`
+  + `@modelcontextprotocol/node` (v2) statt des alten
+  `@modelcontextprotocol/sdk` (max. `2025-11-25`). Legacy- und moderne
+  Clients laufen über denselben `/mcp`-Endpunkt (`createMcpHandler`-Shim
+  bestätigt getestet gegen `2025-06-18`-Handshake und `2026-07-28`-stateless-
+  Requests inkl. `Mcp-Method`/`Mcp-Name`-Headern).
+- **`outputSchema` für alle 11 Tools** (`src/lib/schemas.ts`, zod → JSON Schema).
+- **Tool-Annotations** (`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`).
+- **Rate-Limiting** (`src/lib/rateLimit.ts`, pro Tool-Name, 3 Gewichtsklassen) — vorher 0 % umgesetzt, jetzt Pflichtanforderung der Spec erfüllt.
+- **Pagination für `rheinagent_file_list`** (`cursor`/`next_cursor`, deterministische Sortierung).
+- **Elicitation-Bestätigung vor `delete_apply`** (Multi-Round-Trip, `InputRequiredResult` → `elicitation/create` → `inputResponses`) — live End-to-End getestet (ohne Bestätigung → `input_required`, mit Bestätigung → tatsächliche Löschung).
+- **Strukturiertes Logging** (`src/lib/logging.ts`, stderr-JSON) statt `console.log` — bewusst **nicht** über die MCP-`notifications/message`-Utility, da diese laut Spec (SEP-2577) für `2026-07-28` deprecated ist.
+
+**Noch nicht umgesetzt aus der ursprünglichen Verbesserungsliste:**
+Resource-Exposure (`resources/list`/`resources/read` für Dateien, zusätzlich
+zu den Tools) — bewusst zurückgestellt, da additiv und nicht
+sicherheitskritisch.
+
 ## Nächster Schritt nach jedem obigen Punkt
 
 Reihenfolge-Empfehlung: (1) Audit-Hub-Live-Verifikation, weil sie die

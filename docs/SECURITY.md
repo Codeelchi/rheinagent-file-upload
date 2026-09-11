@@ -59,6 +59,28 @@ strukturell ausgeschlossen, nicht durch eine Kompressionsverhältnis-Heuristik
 gemindert. Ein künftiger Entpack-Processor müsste diese Begrenzung explizit
 und mit echten Größen-/Tiefenlimits neu einführen (siehe [HANDOFF.md](HANDOFF.md)).
 
+## Rate-Limiting
+
+Die MCP-Spec (2026-07-28, "Security Considerations") verlangt: "Servers MUST
+... Rate limit tool invocations." Umgesetzt in `src/lib/rateLimit.ts`,
+pro Tool-Name (nicht pro Client — das Protokoll ist stateless, es gibt keine
+verlässliche Caller-Identität, auf die man stattdessen limitieren könnte).
+Drei Gewichtsklassen mit unterschiedlichem Budget pro Minute (alle per
+Env-Var konfigurierbar): `read` (120), `write` (30), `critical` (15).
+Überschreitung wirft `RateLimitExceededError`, die jeder Tool-Handler als
+normalen Tool-Execution-Error (`isError: true`) zurückgibt — kein
+Prozessabsturz, vom Modell selbst korrigierbar (abwarten, erneut versuchen).
+
+## Explizite Bestätigung vor destruktiven Operationen
+
+`rheinagent_file_delete_apply` ist als `destructiveHint: true` annotiert und
+verlangt zusätzlich eine echte Bestätigung über den Multi-Round-Trip-
+Mechanismus der Spec (`InputRequiredResult` → `elicitation/create` →
+`inputResponses`), bevor die Datei tatsächlich gelöscht wird. Ohne
+akzeptierte `confirm: true`-Antwort bleibt die Datei unverändert liegen.
+Das ist eine echte Protokoll-Ebene-Bestätigung, keine bloße
+Client-UI-Konvention.
+
 ## Keine beliebigen Executor-Tools
 
 Es gibt kein MCP-Tool, das beliebigen Code, Shell-Befehle oder Dateisystem-
