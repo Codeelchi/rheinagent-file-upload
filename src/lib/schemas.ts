@@ -72,3 +72,19 @@ export const DownloadPrepareResultSchema = z.object({
   download_url: z.string(),
   expires_at: z.string(),
 });
+
+export const HealthSchema = z.object({
+  health_profile: z.string(),
+  status: z.enum(["ok", "degraded"]),
+  control_plane_reachable: z.literal(true),
+  data_plane_reachable: z.boolean(),
+  staging_dir_writable: z.boolean(),
+  files_dir_writable: z.boolean(),
+  audit: z.object({
+    mode: z.enum(["off", "hub"]),
+    endpoint_configured: z.boolean().optional(),
+    service_id_configured: z.boolean().optional(),
+    credential_path_configured: z.boolean().optional(),
+    hub_endpoint_reachable: z.boolean().optional(),
+  }),
+});

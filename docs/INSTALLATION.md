@@ -6,6 +6,7 @@
 |---|---|---|
 | `RHEINAGENT_FILE_UPLOAD_MAX_BYTES` | `26214400` (25 MiB) | Upload-Größenlimit, geprüft in Prepare, beim Stream in der Data Plane und erneut beim Finalize |
 | `RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT` | `3902` | Port der Data Plane; muss mit dem tatsächlich gestarteten `dataplane.ts`-Port übereinstimmen |
+| `RHEINAGENT_FILE_UPLOAD_BIND_HOST` | `127.0.0.1` | Bind-Host für **beide** Prozesse. Diese Version hat kein TLS/Auth auf HTTP-Ebene (siehe [SECURITY.md](SECURITY.md)) — nur explizit auf `0.0.0.0` o.ä. ändern, wenn ein Reverse Proxy/andere Zugriffskontrolle davorsteht |
 | `RA_AUDIT_MODE` | `off` | `off` oder `hub` — siehe [AUDIT.md](AUDIT.md) |
 | `RA_AUDIT_ENDPOINT` | — | nur bei `hub` erforderlich |
 | `RA_AUDIT_SERVICE_ID` | — | nur bei `hub` erforderlich |
@@ -57,7 +58,10 @@ Data-Plane als zwei Services ist ein sinnvoller nächster Schritt (siehe
 
 ## Doctor / Health
 
-Es gibt noch kein `rheinagent_file_*`-Healthcheck-Tool und keinen
-`doctor`-CLI-Befehl in dieser Version. Das zu erwartende Verhalten (Health-
-Profil `rheinagent-file-upload-v1`) ist in [VERSIONING.md](VERSIONING.md)
-konzeptionell beschrieben, aber nicht implementiert — siehe [HANDOFF.md](HANDOFF.md).
+`rheinagent_file_health_get` implementiert das Health-Profil
+`rheinagent-file-upload-v1` (Konzept: [VERSIONING.md](VERSIONING.md),
+Implementierungsdetails: [ARCHITECTURE.md](ARCHITECTURE.md)): Plane-
+Erreichbarkeit, Staging-/Files-Verzeichnis-Schreibbarkeit, und im
+`hub`-Audit-Modus die Vollständigkeit der Audit-Konfiguration plus einen
+Best-Effort-Netzwerkcheck des Hub-Endpunkts. Es gibt noch keinen separaten
+`doctor`-CLI-Befehl außerhalb des MCP-Tools.

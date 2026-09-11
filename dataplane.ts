@@ -23,6 +23,13 @@ await ensureDirs();
 
 const app = express();
 
+// Cheap liveness probe for the control plane's rheinagent_file_health_get
+// tool (data_plane_reachable) — no auth, no filesystem access, no
+// information beyond "this process is up".
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 app.put("/upload/:uploadId", async (req, res) => {
   const { uploadId } = req.params;
   const pending = await getPendingUpload(uploadId).catch(() => undefined);
@@ -108,6 +115,9 @@ app.get("/download/:downloadToken", async (req, res) => {
 });
 
 const PORT = Number(process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? 3902);
-app.listen(PORT, () => {
-  console.log(`Data plane listening on http://localhost:${PORT}`);
+// Same loopback-only default and reasoning as the control plane — see
+// server.ts and docs/SECURITY.md.
+const BIND_HOST = process.env.RHEINAGENT_FILE_UPLOAD_BIND_HOST ?? "127.0.0.1";
+app.listen(PORT, BIND_HOST, () => {
+  console.log(`Data plane listening on http://${BIND_HOST}:${PORT}`);
 });

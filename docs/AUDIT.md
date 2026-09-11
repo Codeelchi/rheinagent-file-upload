@@ -54,7 +54,7 @@ registriert werden (siehe [HANDOFF.md](HANDOFF.md)).
 
 ## Lese-Semantik (Invocation, fail-open)
 
-`rheinagent_file_capabilities_get`, `_list`, `_get`, `_job_get`,
+`rheinagent_file_capabilities_get`, `_health_get`, `_list`, `_get`, `_job_get`,
 `_result_get` sowie die Prepare-Schritte (`upload_prepare`,
 `download_prepare`, `process_prepare`, `delete_prepare`) erzeugen höchstens ein
 Invocation-Event über `auditInvocation()`. Im `hub`-Modus degradiert ein
@@ -103,6 +103,7 @@ festgelegt — niemals Dateiname, Pfad, Inhalt oder extrahierter Text:
 
 | Tool | Aktion | Erlaubte Keys | Verboten (nie im Journal) |
 |---|---|---|---|
+| `rheinagent_file_health_get` | `rheinagent_file_health_get` (Invocation) | `status` | Audit-Credentials, Hub-Endpoint-URL |
 | `rheinagent_file_upload_prepare` | `file.upload.prepare` (Invocation) | `mime_category`, `declared_size_bytes` | Dateiname, Pfad |
 | `rheinagent_file_upload_finalize` | `file.upload.finalize` (WRITE, write-ahead) | `mime_category`, `final_size_bytes` | Dateiname, Inhalt, Hash als Klartext |
 | `rheinagent_file_list` | `rheinagent_file_list` (Invocation) | `result_count` | Dateinamen der Liste |

@@ -32,10 +32,11 @@ Fehlfunktion.
 ┌─────────────────────────┐       ┌──────────────────────────┐
 │  Control Plane           │       │  Data Plane               │
 │  server.ts (Port 3901)   │       │  dataplane.ts (Port 3902) │
-│  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (HTTP PUT)    │
-│  11 öffentliche Tools    │       │  keine MCP-Tools, kein     │
+│  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (PUT/GET)      │
+│  13 öffentliche Tools    │       │  keine MCP-Tools, kein     │
 │  Business-/Sicherheits-  │       │  Audit, keine Business-    │
-│  logik, Audit-Aufrufe    │       │  logik — nur Staging-Write │
+│  logik, Audit-Aufrufe    │       │  logik — Staging-Write,    │
+│                           │       │  Download-Read, /healthz  │
 └────────────┬─────────────┘       └────────────┬──────────────┘
              │                                   │
              └──────────────┬────────────────────┘
@@ -52,6 +53,13 @@ teilen sich ausschließlich das Dateisystem unter `data/`, nicht den
 Prozessspeicher — jede Metadaten-Tabelle liest/schreibt bei jedem Zugriff
 frisch von Platte (`src/lib/jsonIndex.ts`), damit keiner der beiden Prozesse
 mit einem veralteten In-Memory-Stand des anderen arbeitet.
+
+Beide Prozesse binden standardmäßig ausschließlich an `127.0.0.1`
+(`RHEINAGENT_FILE_UPLOAD_BIND_HOST`, Default `127.0.0.1`) — da diese Version
+keinerlei TLS/Auth auf HTTP-Ebene hat (siehe [SECURITY.md](SECURITY.md)),
+würde ein Default von `0.0.0.0` das Produkt sonst ungeschützt im
+LAN/Tailnet erreichbar machen. Ein Betrieb hinter einem Reverse Proxy oder
+mit anderer Zugriffskontrolle kann den Host explizit überschreiben.
 
 ## Identität/Autorisierung
 
@@ -102,6 +110,23 @@ erneuter Abruf mit demselben Token innerhalb der TTL muss also funktionieren.
 Läuft das Token ab oder wird die Datei zwischenzeitlich gelöscht, liefert
 die Data Plane `404` bzw. `410`.
 
+## Health / Doctor
+
+`rheinagent_file_health_get` implementiert das in
+[VERSIONING.md](VERSIONING.md) beschriebene Health/Doctor-Konzept
+(Health-Profil `rheinagent-file-upload-v1`): `control_plane_reachable` ist
+per Definition `true` (das Tool antwortet gerade), `data_plane_reachable`
+prüft `GET /healthz` auf der Data Plane (2 s Timeout), `staging_dir_writable`/
+`files_dir_writable` prüfen per `fs.access(dir, W_OK)` ohne eine Probe-Datei
+zu hinterlassen. Im `hub`-Audit-Modus meldet das Tool zusätzlich, **ob**
+`RA_AUDIT_ENDPOINT`/`RA_AUDIT_SERVICE_ID`/`RA_AUDIT_CREDENTIAL_PATH` gesetzt
+sind (nie die Werte selbst) sowie `hub_endpoint_reachable` — ein bewusst
+protokoll-loser Best-Effort-Netzwerk-Check (`checkHubEndpointReachable()`
+in `src/lib/audit.ts`, siehe Kommentar dort), **kein** Beweis, dass der
+Write-Ahead-Vertrag selbst funktioniert (der bleibt implementiert, aber
+unverifiziert, siehe [HANDOFF.md](HANDOFF.md)). `status` ist `"degraded"`,
+sobald irgendeine dieser Prüfungen negativ ausfällt.
+
 ## Processor-Registry
 
 `src/lib/processors.ts` enthält eine feste `Map<string, Processor>`. Ein
@@ -121,6 +146,7 @@ das `structuredContent` beschreibt — Clients können das laut Spec gegen
 | Tool | Input | `structuredContent` (Schema) | Annotations | Rate-Limit-Klasse |
 |---|---|---|---|---|
 | `rheinagent_file_capabilities_get` | — | `CapabilitiesSchema` | readOnly, idempotent | read |
+| `rheinagent_file_health_get` | — | `HealthSchema` | readOnly, idempotent | read |
 | `rheinagent_file_upload_prepare` | `filename`, `declared_size_bytes` | `UploadPrepareResultSchema` | — | write |
 | `rheinagent_file_upload_finalize` | `upload_id` | `FileRecordSchema` | — | critical |
 | `rheinagent_file_list` | `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |

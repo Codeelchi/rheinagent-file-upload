@@ -121,6 +121,30 @@ async function hubFetch(
   }
 }
 
+/**
+ * Best-effort network reachability of RA_AUDIT_ENDPOINT for the health
+ * tool — deliberately NOT a protocol-level check against a documented Hub
+ * health path (the hub write-ahead contract itself is implemented but
+ * unverified against a live instance, see the module docstring above; this
+ * repo doesn't get to invent an unverified health-endpoint contract on
+ * top of that). Sends no credential and just asks "did any HTTP response
+ * come back at all" within a short timeout. Returns `undefined` when the
+ * check doesn't apply (mode "off" or endpoint not configured yet).
+ */
+export async function checkHubEndpointReachable(cfg: AuditConfig): Promise<boolean | undefined> {
+  if (cfg.mode !== "hub" || !cfg.endpoint) return undefined;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    await fetch(cfg.endpoint, { method: "GET", signal: controller.signal });
+    return true; // any response at all counts as "reachable" here
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export interface AllowlistedMetadata {
   [key: string]: string | number | boolean | null;
 }

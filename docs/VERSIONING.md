@@ -75,18 +75,25 @@ echten Manager-Update-Lauf verifiziert.
 
 ## Health/Doctor-Konzept
 
-Health-Profil `rheinagent-file-upload-v1` soll (Zielbild, noch nicht
-implementiert):
+Health-Profil `rheinagent-file-upload-v1`, seit 2026-09-11 implementiert als
+Tool `rheinagent_file_health_get` (siehe [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-- `control_plane_reachable` (Port 3901 antwortet auf `tools/list`)
-- `data_plane_reachable` (Port 3902 antwortet)
-- `audit_mode` + bei `hub`: Hub-Erreichbarkeit, Service-Registrierung,
-  Protokoll-Kompatibilität, Anzahl offener/unvollständiger Operationen
-  (niemals Event-Inhalte oder Credentials — siehe [AUDIT.md](AUDIT.md))
-- `staging_dir_writable`, `files_dir_writable`
+- `control_plane_reachable` (per Definition `true` — das Tool antwortet
+  gerade) ✅
+- `data_plane_reachable` (`GET /healthz` auf Port 3902, 2 s Timeout) ✅
+- `staging_dir_writable`, `files_dir_writable` (`fs.access(dir, W_OK)`,
+  keine Probe-Datei) ✅
+- `audit_mode` + bei `hub`: **welche** Config-Variablen gesetzt sind
+  (`endpoint_configured`/`service_id_configured`/`credential_path_configured`)
+  und `hub_endpoint_reachable` als bewusst protokoll-loser
+  Best-Effort-Netzwerkcheck ✅ — **noch offen**: Service-Registrierung,
+  Protokoll-Kompatibilität und Anzahl offener/unvollständiger Operationen
+  gegen eine echte Hub-Instanz (braucht die in [HANDOFF.md](HANDOFF.md)
+  Punkt 4 beschriebene Cross-Repo-Registrierung zuerst)
 
 Kein Health-Check darf je Dateiinhalte, Hashes einzelner Dateien oder
-Audit-Credentials zurückgeben.
+Audit-Credentials zurückgeben — eingehalten: `hub_endpoint_reachable` prüft
+nur Netzwerk-Erreichbarkeit ohne Credential im Request.
 
 ## Schema-Kompatibilität
 
@@ -100,7 +107,7 @@ hier, bevor es gemacht wird.
 Vor jedem Release-Tag:
 
 - [ ] `npx tsc --noEmit` fehlerfrei
-- [ ] Manuelle End-to-End-Probe aller 12 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
+- [ ] Manuelle End-to-End-Probe aller 13 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
       für das zuletzt dokumentierte Ergebnis) bzw. die automatisierten Tests
       unter `test/` (siehe [HANDOFF.md](HANDOFF.md) zum aktuellen Abdeckungsstand)
 - [ ] `BUILDLOG.md` aktualisiert

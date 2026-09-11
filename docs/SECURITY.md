@@ -117,7 +117,10 @@ gibt es keine Audit-Abhängigkeit und keine Verzögerung.
 - Kein TLS/Auth auf Control- oder Data-Plane-HTTP-Ebene in dieser Version —
   für den Produktionsbetrieb muss das über die RheinAgent-Manager-verwaltete
   Service-Identität/Reverse-Proxy-Schicht kommen, nicht aus eigenem Code
-  (siehe [LICENSE-FLOW.md](LICENSE-FLOW.md) zu Ownership-Grenzen).
+  (siehe [LICENSE-FLOW.md](LICENSE-FLOW.md) zu Ownership-Grenzen). Als
+  Mitigation dafür binden beide Prozesse standardmäßig nur an `127.0.0.1`
+  (`RHEINAGENT_FILE_UPLOAD_BIND_HOST`) statt an alle Interfaces — vor
+  2026-09-11 war das nicht der Fall, siehe [BUILDLOG.md](../BUILDLOG.md).
 
 ## Verbotene öffentliche Flächen
 

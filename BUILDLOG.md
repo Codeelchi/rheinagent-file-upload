@@ -2,6 +2,61 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Bind-Host-Fix (loopback-only) + Health/Doctor-Tool
+
+Auf Anfrage: Verbesserungen für den MCP durchdacht (Bind-Host-Lücke,
+CI-Workflow, Health/Doctor-Tool, Testlücken in `audit.ts`/`jsonIndex.ts`,
+Docker-Setup). Nutzer hat CI für diese Runde zurückgestellt und
+Health/Doctor priorisiert.
+
+**Sicherheitsfix — Bind-Host-Standard:**
+- `server.ts` und `dataplane.ts` riefen `app.listen(PORT, ...)` bisher ohne
+  Host auf, was bei Express/Node `0.0.0.0` bedeutet — auf `berry` (Pi im
+  Tailnet/LAN) waren beide HTTP-Planes damit netzwerkweit erreichbar, obwohl
+  diese Version laut `docs/SECURITY.md` bewusst kein TLS/Auth auf
+  HTTP-Ebene hat.
+- Neue Env-Var `RHEINAGENT_FILE_UPLOAD_BIND_HOST`, Default `127.0.0.1`, für
+  beide Prozesse. Verifiziert per `ss -ltnp`: vorher `*:3902` (wildcard),
+  danach `127.0.0.1:3901`/`127.0.0.1:3902`.
+
+**Neues Tool: `rheinagent_file_health_get`** (Health-Profil
+`rheinagent-file-upload-v1`, Konzept aus `docs/VERSIONING.md` erstmals
+implementiert):
+- `control_plane_reachable` (trivial `true`), `data_plane_reachable` (neuer
+  `GET /healthz`-Endpunkt auf der Data Plane, 2 s Timeout),
+  `staging_dir_writable`/`files_dir_writable` (`fs.access(dir, W_OK)`,
+  hinterlässt keine Probe-Datei).
+- Im `hub`-Audit-Modus zusätzlich: `endpoint_configured`/
+  `service_id_configured`/`credential_path_configured` (nur ob gesetzt, nie
+  die Werte) sowie `hub_endpoint_reachable` — neue Funktion
+  `checkHubEndpointReachable()` in `src/lib/audit.ts`, bewusst ein
+  protokoll-loser reiner Netzwerk-Reachability-Check (kein Credential im
+  Request), **kein** Ersatz für die weiterhin offene Audit-Hub-Live-
+  Verifikation des Write-Ahead-Vertrags selbst.
+- `status: "ok"|"degraded"` — `degraded` sobald irgendeine Einzelprüfung
+  negativ ausfällt.
+
+**Getestet:**
+- Live end-to-end in drei Zuständen: beide Planes hoch → `status: "ok"`,
+  `data_plane_reachable: true`; Data Plane gestoppt → `status: "degraded"`,
+  `data_plane_reachable: false`; `RA_AUDIT_MODE=hub` mit absichtlich
+  unerreichbarem Endpoint (`http://127.0.0.1:9999`) → `status: "degraded"`,
+  `hub_endpoint_reachable: false`, Config-Flags korrekt `true`, keine
+  Credentials im Output.
+- 6 neue automatisierte Tests: `test/audit.test.ts` (neu, 5 Tests für
+  `loadAuditConfig`/`checkHubEndpointReachable` inkl. env-Isolation) + 1
+  neuer Test in `test/store.test.ts` für die Verzeichnis-Schreibbarkeits-
+  Helfer. Insgesamt jetzt **13 Tools, 36 automatisierte Tests, alle grün**;
+  `npx tsc --noEmit` fehlerfrei.
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (Bind-Host-Absatz + neue
+"Health / Doctor"-Sektion + Tool-Vertragstabelle + Diagramm-Update auf 13
+Tools), `docs/SECURITY.md`, `docs/AUDIT.md` (Allowlist-Tabelle),
+`docs/VERSIONING.md` (Health/Doctor-Konzept als implementiert markiert,
+Release-Gate-Toolzahl), `docs/INSTALLATION.md` (neue Env-Var, Doctor-
+Abschnitt), `README.md`, `docs/HANDOFF.md` (beide Punkte aus "offen"
+entfernt, CI-Zurückstellung dokumentiert, Prioritätenliste neu sortiert).
+
 ## 2026-09-11 — Download-Endpunkt für große/binäre Dateien
 
 Nächster unblockierter Punkt aus `docs/HANDOFF.md`s Prioritätenliste:

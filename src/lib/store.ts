@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { JsonIndex } from "./jsonIndex.js";
 import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
@@ -65,6 +66,25 @@ export async function ensureDirs(): Promise<void> {
   await fs.mkdir(FILES_DIR, { recursive: true });
   await fs.mkdir(RESULTS_DIR, { recursive: true });
   await fs.mkdir(META_DIR, { recursive: true });
+}
+
+/** Non-destructive writability probe (fs.access, no file left behind) —
+ * used by the health tool, per docs/VERSIONING.md's Health/Doctor-Konzept. */
+async function isDirWritable(dir: string): Promise<boolean> {
+  try {
+    await fs.access(dir, fsConstants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function checkStagingDirWritable(): Promise<boolean> {
+  return isDirWritable(STAGING_DIR);
+}
+
+export async function checkFilesDirWritable(): Promise<boolean> {
+  return isDirWritable(FILES_DIR);
 }
 
 export async function stagingPath(uploadId: string): Promise<string> {

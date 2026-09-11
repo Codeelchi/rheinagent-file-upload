@@ -26,10 +26,10 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   dazu keinen Zugriff auf eine laufende Hub-Instanz (kein `rheinagent-audit`-
   Profil in den verfügbaren MCP-Connectoren) und hat stattdessen den
   nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
-- Vollständiger aktueller Funktionsstand: alle 12 Tools implementiert und
-  end-to-end verifiziert (Upload/Download/Process/Delete-Flow, Pagination,
-  Elicitation-Bestätigung, Legacy- und moderner `2026-07-28`-Protokollpfad).
-  Details: `BUILDLOG.md` (neuester Eintrag oben).
+- Vollständiger aktueller Funktionsstand: alle 13 Tools implementiert und
+  end-to-end verifiziert (Upload/Download/Process/Delete-Flow, Health/Doctor,
+  Pagination, Elicitation-Bestätigung, Legacy- und moderner
+  `2026-07-28`-Protokollpfad). Details: `BUILDLOG.md` (neuester Eintrag oben).
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
 
@@ -98,15 +98,16 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 ## Innerhalb dieses Repos noch offen (nicht Cross-Repo, aber unerledigt)
 
 - **Kein Docker-Setup** für Control-/Data-Plane als zwei Services.
-- **Kein Health-/Doctor-Tool implementiert** — nur als Zielbild in
-  [VERSIONING.md](VERSIONING.md) beschrieben.
 - **Keine MCP-App-UI** für die aktuelle Tool-Menge (der frühere Prototyp mit
   anderen Tool-Namen wurde entfernt, siehe [BUILDLOG.md](../BUILDLOG.md)).
   UI ist laut Vorgabe optional — Business-Funktionen sind vollständig ohne
   UI nutzbar; eine Wiederanbindung ist rein additiv und blockiert nichts.
 - **Kein automatisierter CI-Lauf** — Tests existieren unter `test/` (siehe
   [VERSIONING.md](VERSIONING.md) Release-Gate), laufen aber aktuell nur
-  manuell per `npm test`.
+  manuell per `npm test`. Am 2026-09-11 bewusst auf Nutzerwunsch
+  zurückgestellt (Health/Doctor-Tool stattdessen priorisiert) — ein
+  einfacher GitHub-Actions-Workflow (`tsc --noEmit` + `npm test` bei jedem
+  Push/PR gegen `main`) ist der naheliegende nächste Schritt dafür.
 - **Archiv-/Entpack-Processor nicht vorhanden** — Archivformate werden
   komplett abgelehnt (siehe [SECURITY.md](SECURITY.md)); sobald ein
   Entpack-Processor gewünscht ist, müssen dafür echte Archive-Bomb-Limits
@@ -116,6 +117,26 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **Bind-Host-Standard auf `127.0.0.1` geändert.** Beide Prozesse lauschten
+  vorher ohne expliziten Host (`app.listen(PORT)`), was auf Node/Express
+  `0.0.0.0` bedeutet — auf einem Homelab-Host im Tailnet/LAN ungeschützt
+  erreichbar, da diese Version kein TLS/Auth auf HTTP-Ebene hat (siehe
+  [SECURITY.md](SECURITY.md)). Neue Env-Var
+  `RHEINAGENT_FILE_UPLOAD_BIND_HOST` (Default `127.0.0.1`), siehe
+  [INSTALLATION.md](INSTALLATION.md).
+- **Health/Doctor-Tool.** `rheinagent_file_health_get` implementiert das
+  Health-Profil `rheinagent-file-upload-v1` aus [VERSIONING.md](VERSIONING.md):
+  Data-Plane-Erreichbarkeit (`GET /healthz`, neu), Staging-/Files-
+  Verzeichnis-Schreibbarkeit, und im `hub`-Audit-Modus Config-Vollständigkeit
+  + `checkHubEndpointReachable()` als bewusst protokoll-loser
+  Best-Effort-Netzwerkcheck (`src/lib/audit.ts`) — **kein** Beweis, dass der
+  Write-Ahead-Vertrag selbst funktioniert. Live end-to-end getestet in drei
+  Zuständen (beide Planes up → `ok`; Data Plane down → `degraded`;
+  `RA_AUDIT_MODE=hub` mit unerreichbarem Endpoint → `degraded` +
+  `hub_endpoint_reachable: false`, keine Credentials im Output). 6 neue
+  automatisierte Tests (`test/audit.test.ts`, 2 neue in `test/store.test.ts`)
+  — jetzt **13 Tools, 36 automatisierte Tests**, `npx tsc --noEmit` fehlerfrei.
+  Auf Nutzerwunsch vor dem CI-Workflow priorisiert (siehe oben).
 - **Download-Endpunkt für große/binäre Dateien.** Neues Tool
   `rheinagent_file_download_prepare` (Control Plane) legt ein befristetes,
   wiederverwendbares `download_token` an (`data/meta/downloads.json`,
@@ -153,7 +174,8 @@ Reihenfolge-Empfehlung: (1) Audit-Hub-Live-Verifikation, weil sie die
 Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber nur
 mit Zugriff auf eine laufende `rheinagent-audit`-Instanz machbar, den diese
 Session nicht hatte → (2) License/Manager/Update-Feed-Registrierung, weil sie
-Voraussetzung für jeden echten Kunden-Test ist → (3) Health/Doctor +
-Docker, weil sie den Betrieb erleichtern, aber nichts Funktionales
-freischalten → (4) UI-Wiederanbindung, da explizit optional. Download-
-Endpunkt (vormals Punkt 3) ist seit 2026-09-11 erledigt, siehe oben.
+Voraussetzung für jeden echten Kunden-Test ist → (3) CI-Workflow (auf
+Nutzerwunsch am 2026-09-11 zurückgestellt) + Docker, weil sie den Betrieb
+erleichtern, aber nichts Funktionales freischalten → (4) UI-Wiederanbindung,
+da explizit optional. Download-Endpunkt und Health/Doctor-Tool (vormals
+Punkt 3) sind seit 2026-09-11 erledigt, siehe oben.

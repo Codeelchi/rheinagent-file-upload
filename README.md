@@ -38,6 +38,7 @@ Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/
 | Tool | Zweck |
 |---|---|
 | `rheinagent_file_capabilities_get` | Protokollversion, Profile, Limits, Processor-Liste |
+| `rheinagent_file_health_get` | Health/Doctor: Plane-Erreichbarkeit, Verzeichnis-Schreibbarkeit, Audit-Status |
 | `rheinagent_file_upload_prepare` | Upload ankündigen, opake `upload_id` + Data-Plane-URL erhalten |
 | `rheinagent_file_upload_finalize` | Staged Bytes validieren und final übernehmen |
 | `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten) |

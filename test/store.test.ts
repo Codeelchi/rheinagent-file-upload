@@ -11,6 +11,8 @@ import {
   getDownloadTicket,
   createDeleteTicket,
   applyDelete,
+  checkStagingDirWritable,
+  checkFilesDirWritable,
 } from "../src/lib/store.js";
 import { sha256Hex } from "../src/lib/security.js";
 
@@ -65,6 +67,14 @@ test("createDownloadTicket refuses a file that is pending-delete", async () => {
   const deleteTicket = await createDeleteTicket(record.fileId);
   await assert.rejects(() => createDownloadTicket(record.fileId), /file not found/);
   await applyDelete(deleteTicket.deleteToken); // cleanup: actually remove it
+});
+
+// --- health/doctor writability probes ---
+
+test("checkStagingDirWritable/checkFilesDirWritable report true once ensureDirs has run", async () => {
+  await ensureDirs();
+  assert.equal(await checkStagingDirWritable(), true);
+  assert.equal(await checkFilesDirWritable(), true);
 });
 
 test.after(async () => {

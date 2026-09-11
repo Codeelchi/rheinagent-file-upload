@@ -15,8 +15,8 @@ import express from "express";
 import fs from "node:fs/promises";
 import { z } from "zod";
 
-import { getCapabilities } from "./src/lib/capabilities.js";
-import { auditInvocation, auditCriticalWrite } from "./src/lib/audit.js";
+import { getCapabilities, HEALTH_PROFILE } from "./src/lib/capabilities.js";
+import { auditInvocation, auditCriticalWrite, loadAuditConfig, checkHubEndpointReachable } from "./src/lib/audit.js";
 import {
   ensureDirs,
   createPendingUpload,
@@ -35,6 +35,8 @@ import {
   updateJob,
   writeJobResult,
   readJobResult,
+  checkStagingDirWritable,
+  checkFilesDirWritable,
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds } from "./src/lib/processors.js";
@@ -50,6 +52,7 @@ import {
   JobResultEnvelopeSchema,
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
+  HealthSchema,
 } from "./src/lib/schemas.js";
 
 const logger = createLogger("rheinagent-file-upload.control-plane");
@@ -106,6 +109,61 @@ function registerTools(server: McpServer): void {
       await auditInvocation("rheinagent_file_capabilities_get");
       const caps = getCapabilities();
       return { content: [{ type: "text", text: JSON.stringify(caps) }], structuredContent: caps };
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_health_get",
+    {
+      title: "Health / doctor check",
+      description:
+        "Checks control/data-plane reachability, staging/files directory writability, and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
+      inputSchema: z.object({}),
+      outputSchema: HealthSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    guarded("rheinagent_file_health_get", "read", async () => {
+      const dataplanePort = process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? "3902";
+      const dataPlaneReachable = await fetch(`http://localhost:${dataplanePort}/healthz`, {
+        signal: AbortSignal.timeout(2000),
+      })
+        .then((res) => res.ok)
+        .catch(() => false);
+
+      const [stagingWritable, filesWritable] = await Promise.all([
+        checkStagingDirWritable(),
+        checkFilesDirWritable(),
+      ]);
+
+      const auditCfg = loadAuditConfig();
+      const audit: Record<string, unknown> = { mode: auditCfg.mode };
+      if (auditCfg.mode === "hub") {
+        audit.endpoint_configured = Boolean(auditCfg.endpoint);
+        audit.service_id_configured = Boolean(auditCfg.serviceId);
+        audit.credential_path_configured = Boolean(auditCfg.credentialPath);
+        audit.hub_endpoint_reachable = await checkHubEndpointReachable(auditCfg);
+      }
+
+      const healthy =
+        dataPlaneReachable &&
+        stagingWritable &&
+        filesWritable &&
+        (auditCfg.mode === "off" || audit.hub_endpoint_reachable !== false);
+
+      const body = {
+        health_profile: HEALTH_PROFILE,
+        status: healthy ? ("ok" as const) : ("degraded" as const),
+        control_plane_reachable: true as const,
+        data_plane_reachable: dataPlaneReachable,
+        staging_dir_writable: stagingWritable,
+        files_dir_writable: filesWritable,
+        audit,
+      };
+      await auditInvocation("rheinagent_file_health_get", { status: body.status });
+      return {
+        content: [{ type: "text", text: `status: ${body.status}` }],
+        structuredContent: body,
+      };
     }),
   );
 
@@ -457,7 +515,12 @@ expressApp.all("/mcp", (req, res) => {
 });
 
 const PORT = 3901;
+// Defaults to loopback-only: this product ships with no TLS/auth on either
+// HTTP plane (see docs/SECURITY.md), so binding to all interfaces by
+// default would expose it to the whole LAN/Tailnet. Set explicitly (e.g.
+// to 0.0.0.0) only behind a reverse proxy or other access control.
+const BIND_HOST = process.env.RHEINAGENT_FILE_UPLOAD_BIND_HOST ?? "127.0.0.1";
 await ensureDirs();
-expressApp.listen(PORT, () => {
-  console.log(`Control plane listening on http://localhost:${PORT}/mcp`);
+expressApp.listen(PORT, BIND_HOST, () => {
+  console.log(`Control plane listening on http://${BIND_HOST}:${PORT}/mcp`);
 });
