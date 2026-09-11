@@ -1,13 +1,13 @@
 {
-  "name": "mcp-ui-test",
-  "version": "1.0.0",
+  "name": "rheinagent-file-upload",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "INPUT=mcp-app.html vite build",
-    "serve": "npx tsx server.ts"
+    "serve": "tsx server.ts",
+    "serve:dataplane": "tsx dataplane.ts",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.1.2",
     "@modelcontextprotocol/sdk": "latest",
     "cors": "latest",
     "express": "latest",
@@ -17,8 +17,6 @@
     "@types/cors": "latest",
     "@types/express": "latest",
     "tsx": "latest",
-    "typescript": "latest",
-    "vite": "latest",
-    "vite-plugin-singlefile": "latest"
+    "typescript": "latest"
   }
 }
