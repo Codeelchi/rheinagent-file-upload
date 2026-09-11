@@ -42,7 +42,7 @@ Fehlfunktion.
              └──────────────┬────────────────────┘
                              ▼
                     data/ (gemeinsames Dateisystem)
-                    staging/  files/  results/  meta/*.json
+                    staging/  files/  results/  meta/state.sqlite
 ```
 
 Beide Prozesse sind **getrennt**, weil große Binärdaten nie durch MCP-JSON
@@ -50,9 +50,11 @@ laufen sollen: der Control-Plane-Prozess kennt nur `upload_id`/`file_id`/
 `job_id`, nie rohe Bytes im Request/Response-Pfad (außer dem Sonderfall
 kleiner Text-Inhalte in `rheinagent_file_get`, siehe unten). Beide Prozesse
 teilen sich ausschließlich das Dateisystem unter `data/`, nicht den
-Prozessspeicher — jede Metadaten-Tabelle liest/schreibt bei jedem Zugriff
-frisch von Platte (`src/lib/jsonIndex.ts`), damit keiner der beiden Prozesse
-mit einem veralteten In-Memory-Stand des anderen arbeitet.
+Prozessspeicher — Metadaten liegen seit 2026-09-11 in einer gemeinsamen
+SQLite-Datenbank (`data/meta/state.sqlite`, WAL-Modus, `src/lib/sqliteIndex.ts`),
+vorher in einzelnen JSON-Dateien. Jeder Tabellenzugriff geht direkt gegen
+diese Datei, kein In-Memory-Cache in keinem der beiden Prozesse — siehe
+[STATE-MIGRATION.md](STATE-MIGRATION.md) für die Migrationsbegründung.
 
 Beide Prozesse binden standardmäßig ausschließlich an `127.0.0.1`
 (`RHEINAGENT_FILE_UPLOAD_BIND_HOST`, Default `127.0.0.1`) — da diese Version

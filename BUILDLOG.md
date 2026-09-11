@@ -2,6 +2,41 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Persistence-Migration JSON → SQLite
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer (mehrteiliger Auftrag,
+mehrere Runden). Erste Runde: Baseline-Hygiene (siehe vorheriger Eintrag,
+CI) + Persistence-Härtung, wie in der Zielvorgabe als Phase 2 priorisiert.
+
+**Metadaten-Persistenz auf SQLite migriert.** `src/lib/jsonIndex.ts`
+(whole-file-JSON, "last write wins" bei echter Gleichzeitigkeit zwischen
+Control-/Data-Plane-Prozess, dokumentierte bekannte Grenze in
+`SECURITY.md`) ersetzt durch `src/lib/sqliteIndex.ts` — `node:sqlite`
+(eingebaut seit Node 22, keine neue Dependency, kein natives Addon, gleiche
+Supply-Chain-Logik wie die `pdfjs-dist`-Entscheidung), WAL-Modus, echte
+Read-Committed-Transaktionen pro Zeile statt Whole-File-Rewrite. Identischer
+öffentlicher Vertrag (`get`/`values`/`set`/`delete`) — `store.ts` musste nur
+die Instanziierung der fünf Tabellen ändern (`uploads`/`files`/`jobs`/
+`deletes`/`downloads`), kein anderer Aufrufer betroffen. Details/Begründung:
+`docs/STATE-MIGRATION.md` (neu).
+
+Automatische, idempotente Migration bestehender `data/meta/*.json`-Dateien
+beim Start (`migrateLegacyJsonMetadata()` in `ensureDirs()`) — importiert
+nur in eine noch leere Zieltabelle, benennt die JSON-Quelle danach zu
+`.migrated` um statt sie zu löschen. Live end-to-end verifiziert: eine
+handgeschriebene Alt-JSON-Datei wurde korrekt importiert, per direkter
+SQLite-Abfrage bestätigt, Quelldatei lag danach als `.migrated` vor.
+
+`test/jsonIndex.test.ts` (9 Tests) entfernt (Modul ist tot, keine
+verbleibenden Aufrufer), `test/sqliteIndex.test.ts` (neu, 10 Tests) deckt
+denselben Verhaltensvertrag plus SQLite-spezifische Fälle (mehrere
+Tabellen pro Datei unabhängig, Migration, kein Überschreiben vorhandener
+Zeilen) ab. Netto **87 automatisierte Tests**, `npm run check` fehlerfrei.
+`docs/VERSIONING.md`/`docs/SECURITY.md`/`docs/ARCHITECTURE.md` auf den
+neuen Stand gebracht; dabei auch den seit Längerem bestehenden
+Versions-Drift behoben (`VERSIONING.md` nannte noch `0.1.0`,
+`package.json` stand längst auf `0.2.0`).
+
 ## 2026-09-11 — GitHub-Actions-CI-Workflow
 
 Auftrag: letzte Session prüfen und weiterarbeiten. Repo war sauber (working

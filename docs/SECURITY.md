@@ -162,10 +162,13 @@ gibt es keine Audit-Abhängigkeit und keine Verzögerung.
 ## Bekannte Grenzen dieser Version
 
 - Keine Mandanten-/Nutzertrennung — ein Betrieb pro Control-Plane-Instanz.
-- Metadaten-Schreibzugriffe über zwei Prozesse (Control-/Data-Plane) sind
-  "last write wins" bei echter Gleichzeitigkeit auf denselben Datensatz
-  (siehe `src/lib/jsonIndex.ts`) — für Einzelbetrieb akzeptiert, nicht für
-  Hochlast-Mehrinstanz-Szenarien gedacht.
+- Metadaten liegen seit 2026-09-11 in SQLite (WAL-Modus,
+  `src/lib/sqliteIndex.ts`) statt in whole-file-JSON — echte
+  Read-Committed-Transaktionen pro Zeile statt "last write wins" beim
+  gleichzeitigen Schreiben zweier Prozesse auf denselben Datensatz, siehe
+  [STATE-MIGRATION.md](STATE-MIGRATION.md). Weiterhin **kein** verteiltes
+  Locking über mehrere Hosts hinweg — für Einzelbetrieb (Control-/Data-Plane
+  auf demselben Host) gedacht, nicht für Hochlast-Mehrinstanz-Szenarien.
 - `rheinagent_file_get` liefert Inhalt nur für kleine Textdateien inline;
   größere/binäre Dateien laufen über `rheinagent_file_download_prepare` +
   den Data-Plane-`GET /download/:downloadToken`-Endpunkt.

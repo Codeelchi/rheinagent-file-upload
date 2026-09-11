@@ -3,9 +3,11 @@
 ## Kanonische Versionsquelle
 
 `package.json#version` in diesem Repo ist die kanonische Versionsquelle.
-SemVer (`MAJOR.MINOR.PATCH`, Pre-Releases als `-rc.N`). Aktuell: `0.1.0`
-(erste funktionsfähige Version, noch nicht bei Manager/License
-Service/Update Feed registriert — siehe [LICENSE-FLOW.md](LICENSE-FLOW.md)).
+SemVer (`MAJOR.MINOR.PATCH`, Pre-Releases als `-rc.N`). Aktuell: `0.2.0`
+(noch nicht bei Manager/License Service/Update Feed registriert — siehe
+[LICENSE-FLOW.md](LICENSE-FLOW.md)). Dieser Wert muss bei jeder
+`package.json`-Versionsänderung manuell mitgezogen werden — es gibt keine
+automatisierte Drift-Prüfung zwischen den beiden Dateien.
 Ein Release-Tag in Git muss exakt `v<version>` aus `package.json`
 entsprechen; eine Abweichung ist ein Build-Abbruch-Kriterium, nicht etwas,
 das die Release-Pipeline stillschweigend korrigiert.
@@ -116,6 +118,6 @@ Vor jedem Release-Tag:
 
 ## Release-Historie
 
-Noch kein getaggtes Release. Erster Eintrag folgt mit `v0.1.0`, sobald die
-in [LICENSE-FLOW.md](LICENSE-FLOW.md) gelistete Cross-Repo-Registrierung
-zumindest für einen Test-Kunden durchgeführt wurde.
+Noch kein getaggtes Release. Erster Eintrag folgt mit `v<package.json#version>`,
+sobald die in [LICENSE-FLOW.md](LICENSE-FLOW.md) gelistete Cross-Repo-
+Registrierung zumindest für einen Test-Kunden durchgeführt wurde.
