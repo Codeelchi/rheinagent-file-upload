@@ -14,7 +14,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import { z } from "zod";
 
-import { getCapabilities, HEALTH_PROFILE, USAGE_STEPS } from "./src/lib/capabilities.js";
+import { getCapabilities, HEALTH_PROFILE, USAGE_STEPS, PRODUCT_VERSION, STATE_SCHEMA_VERSION } from "./src/lib/capabilities.js";
 import { auditInvocation, auditCriticalWrite, loadAuditConfig, checkHubEndpointReachable } from "./src/lib/audit.js";
 import {
   ensureDirs,
@@ -42,6 +42,7 @@ import {
   getStorageStats,
   verifyFile,
   findFilesBySha256,
+  getJobStats,
 } from "./src/lib/store.js";
 import { buildKnowledgeHandoffProposal } from "./src/lib/knowledgeHandoff.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
@@ -159,10 +160,11 @@ function registerTools(server: McpServer): void {
         .then((res) => res.ok)
         .catch(() => false);
 
-      const [stagingWritable, filesWritable, storage] = await Promise.all([
+      const [stagingWritable, filesWritable, storage, jobStats] = await Promise.all([
         checkStagingDirWritable(),
         checkFilesDirWritable(),
         getStorageStats(),
+        getJobStats(),
       ]);
 
       const auditCfg = loadAuditConfig();
@@ -182,11 +184,15 @@ function registerTools(server: McpServer): void {
 
       const body = {
         health_profile: HEALTH_PROFILE,
+        product_version: PRODUCT_VERSION,
+        state_schema_version: STATE_SCHEMA_VERSION,
         status: healthy ? ("ok" as const) : ("degraded" as const),
         control_plane_reachable: true as const,
         data_plane_reachable: dataPlaneReachable,
         staging_dir_writable: stagingWritable,
         files_dir_writable: filesWritable,
+        processor_registry: { processor_count: listProcessorIds().length },
+        jobs: jobStats,
         storage: {
           file_count: storage.fileCount,
           total_bytes: storage.totalBytes,
@@ -712,7 +718,7 @@ const SERVER_INSTRUCTIONS = [
 const mcpHandler = createMcpHandler(
   () => {
     const server = new McpServer(
-      { name: "RheinAgent File Upload MCP", version: "0.2.0" },
+      { name: "RheinAgent File Upload MCP", version: PRODUCT_VERSION },
       { instructions: SERVER_INSTRUCTIONS },
     );
     registerTools(server);

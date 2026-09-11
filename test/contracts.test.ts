@@ -102,11 +102,15 @@ test("toWireDeleteTicket produces the snake_case DeleteTicketResultSchema shape"
 test("HealthSchema accepts storage.by_mime_category with only some categories present", () => {
   const body = {
     health_profile: "rheinagent-file-upload-v1",
+    product_version: "0.2.0",
+    state_schema_version: 1,
     status: "ok" as const,
     control_plane_reachable: true as const,
     data_plane_reachable: true,
     staging_dir_writable: true,
     files_dir_writable: true,
+    processor_registry: { processor_count: 11 },
+    jobs: { prepared: 0, completed: 0, failed: 0 },
     storage: {
       file_count: 2,
       total_bytes: 30,

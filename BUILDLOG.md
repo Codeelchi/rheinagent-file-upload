@@ -2,6 +2,43 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Health/Capabilities erweitert, Symlink-Sicherheitstests
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, restliche kleinere Punkte
+aus Phase 9/Definition-of-Done ("Health/Doctor erweitert", "Capabilities
+aktuell", Security-Testabdeckung).
+
+**`product_version`/`state_schema_version`** neu sowohl in
+`rheinagent_file_capabilities_get` als auch `rheinagent_file_health_get`.
+`PRODUCT_VERSION` liest `package.json#version` zur Laufzeit
+(`src/lib/capabilities.ts`) statt eine dritte hartkodierte Kopie zu sein —
+vorher stand `"0.2.0"` sowohl in `package.json` als auch separat in
+`server.ts`s `McpServer`-Identität; jetzt eine einzige Quelle.
+`STATE_SCHEMA_VERSION` (aktuell `1`) macht das in `docs/VERSIONING.md`
+("Schema-Kompatibilität") schon beschriebene, bisher nirgends im Tool-
+Output sichtbare Konzept erstmals abfragbar.
+
+**`processor_registry.processor_count`, `jobs` (`prepared`/`completed`/
+`failed`)** neu in `rheinagent_file_health_get` — `getJobStats()`
+(`store.ts`, neu) zählt Jobs nach Zustand, ohne durch
+`rheinagent_file_job_list` paginieren zu müssen. Ein Betreiber sieht so
+direkt "stauen sich fehlgeschlagene Jobs an", ohne das selbst
+zusammenzurechnen.
+
+**3 neue Symlink-Sicherheitstests** (`test/security.test.ts`) für
+`assertNotSymlink()` — bisher ganz ohne dedizierte Tests, obwohl es die
+letzte Verteidigungslinie vor jedem Schreib-/Rename-Ziel in `store.ts`
+ist (`finalizeFile`/`writeJobResult`). Echter Symlink angelegt, Ablehnung
+verifiziert.
+
+Live end-to-end über echten HTTP-Flow verifiziert:
+`rheinagent_file_health_get` liefert korrekt `product_version: "0.2.0"`,
+`state_schema_version: 1`, `processor_registry.processor_count: 11`,
+`jobs: {prepared:0,completed:0,failed:0}`.
+
+4 neue automatisierte Tests, 1 bestehender Test-Fixture-Body aktualisiert
+— jetzt **155 automatisierte Tests**, `npm run check` fehlerfrei.
+
 ## 2026-09-11 — Docker/Produktionsrunntime
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 8 (Production

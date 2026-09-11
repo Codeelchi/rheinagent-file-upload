@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
 import {
   classifyExtension,
   sniffMimeCategory,
   safeJoin,
   sha256Hex,
+  assertNotSymlink,
 } from "../src/lib/security.js";
 import { assertOpaqueId, newFileId, newUploadId } from "../src/lib/ids.js";
 import { buildSampleDocx, buildSampleXlsx, buildZip } from "./testZip.js";
@@ -121,4 +124,40 @@ test("sniffMimeCategory rejects a plain-zip-renamed-to-.docx at the declared/sni
 test("sniffMimeCategory fails closed (archive) for a docx whose [Content_Types].xml is malformed/missing", () => {
   const brokenDocx = buildZip([{ name: "word/document.xml", content: Buffer.from("<w:document/>") }]);
   assert.equal(sniffMimeCategory(brokenDocx), "archive");
+});
+
+// --- symlink refusal: assertNotSymlink is the last line of defense before any write/rename target ---
+
+test("assertNotSymlink refuses to proceed when a symlink already exists at the target path", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    const realTarget = path.join(dir, "real-file");
+    await fs.writeFile(realTarget, "not relevant");
+    const symlinkPath = path.join(dir, "suspicious-symlink");
+    await fs.symlink(realTarget, symlinkPath);
+
+    await assert.rejects(() => assertNotSymlink(symlinkPath), /refusing to operate through a symlink/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertNotSymlink is a no-op when nothing exists yet at the target path (the normal case)", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    await assert.doesNotReject(() => assertNotSymlink(path.join(dir, "does-not-exist-yet")));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertNotSymlink is a no-op for an existing plain (non-symlink) file", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    const plainFile = path.join(dir, "plain-file");
+    await fs.writeFile(plainFile, "ordinary content");
+    await assert.doesNotReject(() => assertNotSymlink(plainFile));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

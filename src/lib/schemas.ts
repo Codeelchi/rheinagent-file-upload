@@ -59,6 +59,8 @@ export const JobRecordSchema = z.object({
 
 export const CapabilitiesSchema = z.object({
   product_slug: z.string(),
+  product_version: z.string(),
+  state_schema_version: z.number().int().positive(),
   mcp_protocol_version: z.string(),
   package_profile: z.string(),
   audit_profile: z.string(),
@@ -159,11 +161,19 @@ export const DownloadPrepareResultSchema = z.object({
 
 export const HealthSchema = z.object({
   health_profile: z.string(),
+  product_version: z.string(),
+  state_schema_version: z.number().int().positive(),
   status: z.enum(["ok", "degraded"]),
   control_plane_reachable: z.literal(true),
   data_plane_reachable: z.boolean(),
   staging_dir_writable: z.boolean(),
   files_dir_writable: z.boolean(),
+  processor_registry: z.object({ processor_count: z.number().int().nonnegative() }),
+  jobs: z.object({
+    prepared: z.number().int().nonnegative(),
+    completed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
   storage: z.object({
     file_count: z.number().int().nonnegative(),
     total_bytes: z.number().int().nonnegative(),

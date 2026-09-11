@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { MAX_UPLOAD_BYTES } from "./security.js";
 import { listProcessorsWithCategories } from "./processors.js";
 import { loadAuditConfig } from "./audit.js";
@@ -8,6 +10,26 @@ export const MCP_PROTOCOL_VERSION = "2026-07-28";
 export const PACKAGE_PROFILE = "rheinagent-file-upload@1";
 export const AUDIT_PROFILE = "rheinagent-file-upload@1";
 export const HEALTH_PROFILE = "rheinagent-file-upload-v1";
+
+/**
+ * `package.json#version` read at startup rather than hardcoded a second
+ * time here (or a third time, in server.ts's McpServer identity) — one
+ * canonical source, per docs/VERSIONING.md, instead of yet another copy
+ * that can silently drift out of sync with it.
+ */
+export const PRODUCT_VERSION: string = JSON.parse(
+  fs.readFileSync(path.join(import.meta.dirname, "..", "..", "package.json"), "utf-8"),
+).version;
+
+/**
+ * `FileRecord`/`JobRecord`/`PendingUpload`/`DeleteTicket`/`DownloadTicket`
+ * (src/lib/store.ts) have no per-record version field of their own yet
+ * (see docs/VERSIONING.md "Schema-Kompatibilität") — this single constant
+ * stands in for "the shape of these records as a whole" until/unless a
+ * breaking change needs real per-table migration, at which point this
+ * bumps and docs/VERSIONING.md gets a migration note.
+ */
+export const STATE_SCHEMA_VERSION = 1;
 
 /**
  * Canonical workflow crib sheet — the single source of truth for both the
@@ -33,6 +55,8 @@ export function getCapabilities() {
   const audit = loadAuditConfig();
   return {
     product_slug: PRODUCT_SLUG,
+    product_version: PRODUCT_VERSION,
+    state_schema_version: STATE_SCHEMA_VERSION,
     mcp_protocol_version: MCP_PROTOCOL_VERSION,
     package_profile: PACKAGE_PROFILE,
     audit_profile: AUDIT_PROFILE,

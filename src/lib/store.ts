@@ -354,6 +354,17 @@ export async function getStorageStats(): Promise<{
   return { fileCount: all.length, totalBytes, stagingFileCount: staged.length, byMimeCategory };
 }
 
+/** Job-count breakdown by state for the health tool — cheap to compute
+ * (one full read of the jobs table, no pagination) and lets an operator
+ * see "are jobs piling up failed/pending" without paginating through
+ * rheinagent_file_job_list themselves. */
+export async function getJobStats(): Promise<{ prepared: number; completed: number; failed: number }> {
+  const all = await jobs.values();
+  const stats = { prepared: 0, completed: 0, failed: 0 };
+  for (const j of all) stats[j.state]++;
+  return stats;
+}
+
 /**
  * Download tickets gate the data-plane GET endpoint: a client must first
  * call the control-plane `rheinagent_file_download_prepare` tool (which
