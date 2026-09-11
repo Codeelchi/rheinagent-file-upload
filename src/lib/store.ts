@@ -315,6 +315,21 @@ export async function verifyFile(fileId: string): Promise<{ record: FileRecord; 
   return { record, actualSha256, matches: actualSha256 === record.sha256 };
 }
 
+/**
+ * Every accepted file's SHA-256 is already recorded at `upload_finalize`
+ * time (see docs/SECURITY.md) — this just looks it up against every other
+ * accepted file to answer "has this exact content already been uploaded
+ * before". Read-only, makes no changes and never deletes/merges anything;
+ * a caller (human or agent) decides what a duplicate finding means for
+ * their workflow. `excludeFileId` lets a caller check "does this file I
+ * already have have any duplicates" without the file always trivially
+ * matching itself.
+ */
+export async function findFilesBySha256(sha256: string, excludeFileId?: string): Promise<FileRecord[]> {
+  const all = await listFiles();
+  return all.filter((f) => f.sha256 === sha256 && f.fileId !== excludeFileId);
+}
+
 /** Live disk-usage snapshot for the health tool — counts every accepted
  * file (including ones currently `pendingDelete`, since their bytes are
  * still on disk until `delete_apply` actually runs) plus how many bytes

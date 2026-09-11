@@ -26,6 +26,7 @@ import {
   updateJob,
   verifyFile,
   filePath,
+  findFilesBySha256,
 } from "../src/lib/store.js";
 import { sha256Hex, type MimeCategory } from "../src/lib/security.js";
 
@@ -356,6 +357,33 @@ test("listJobsPage filters by state and processor_id", async () => {
 
   const t = await createDeleteTicket(f.fileId);
   await applyDelete(t.deleteToken);
+});
+
+test("findFilesBySha256 finds every accepted file sharing the same content hash", async () => {
+  const content = `duplicate content ${Date.now()}`;
+  const a = await acceptTestFile("dup-a.txt", content);
+  const b = await acceptTestFile("dup-b.txt", content);
+  const unrelated = await acceptTestFile("not-a-dup.txt", "totally different content");
+
+  const found = await findFilesBySha256(a.sha256);
+  const foundIds = found.map((f) => f.fileId).sort();
+  assert.deepEqual(foundIds, [a.fileId, b.fileId].sort());
+  assert.ok(!foundIds.includes(unrelated.fileId));
+});
+
+test("findFilesBySha256 excludes the given file_id, e.g. checking a file against every *other* file", async () => {
+  const content = `exclude-self content ${Date.now()}`;
+  const a = await acceptTestFile("exclude-a.txt", content);
+  const b = await acceptTestFile("exclude-b.txt", content);
+
+  const found = await findFilesBySha256(a.sha256, a.fileId);
+  assert.deepEqual(found.map((f) => f.fileId), [b.fileId]);
+});
+
+test("findFilesBySha256 returns an empty array for content nothing else shares", async () => {
+  const a = await acceptTestFile("solo.txt", `solo content ${Date.now()}`);
+  const found = await findFilesBySha256(a.sha256, a.fileId);
+  assert.deepEqual(found, []);
 });
 
 test.after(async () => {

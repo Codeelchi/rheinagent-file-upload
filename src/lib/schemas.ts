@@ -24,6 +24,7 @@ export const FileIdField = z.string().regex(idPattern(ID_PREFIXES.file), "must b
 export const JobIdField = z.string().regex(idPattern(ID_PREFIXES.job), "must be a job_id previously returned by this server");
 export const UploadIdField = z.string().regex(idPattern(ID_PREFIXES.upload), "must be an upload_id previously returned by this server");
 export const DeleteTokenField = z.string().regex(idPattern(ID_PREFIXES.delete), "must be a delete_token previously returned by this server");
+export const Sha256Field = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase 64-character hex SHA-256 digest");
 
 export const MimeCategorySchema = z.enum(["text", "pdf", "image", "office", "archive", "unknown"]);
 
@@ -100,6 +101,19 @@ export const FileVerifyResultSchema = FileRecordSchema.extend({
   actual_sha256: z.string(),
   matches: z.boolean(),
 });
+
+export const DuplicateCheckResultSchema = z.object({
+  sha256: z.string(),
+  duplicates: z.array(FileRecordSchema),
+});
+
+/** Exactly one of file_id/sha256 must be given — checking "does this file
+ * I already have have duplicates" (file_id) and "does this exact content
+ * already exist, e.g. before I even upload it" (sha256) are the two real
+ * use cases; giving both or neither has no well-defined meaning. */
+export const DuplicateCheckInputSchema = z
+  .object({ file_id: FileIdField.optional(), sha256: Sha256Field.optional() })
+  .refine((v) => (v.file_id ? !v.sha256 : !!v.sha256), { message: "provide exactly one of file_id or sha256" });
 
 export const JobResultEnvelopeSchema = z.object({
   job_id: z.string(),

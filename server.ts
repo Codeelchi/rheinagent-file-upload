@@ -41,6 +41,7 @@ import {
   renameFile,
   getStorageStats,
   verifyFile,
+  findFilesBySha256,
 } from "./src/lib/store.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
 import { getProcessor, listProcessorIds, processorSupportsMimeCategory } from "./src/lib/processors.js";
@@ -54,6 +55,8 @@ import {
   FileListResultSchema,
   FileViewResultSchema,
   FileVerifyResultSchema,
+  DuplicateCheckResultSchema,
+  DuplicateCheckInputSchema,
   JobResultEnvelopeSchema,
   DeleteTicketResultSchema,
   DownloadPrepareResultSchema,
@@ -372,6 +375,40 @@ function registerTools(server: McpServer): void {
         return {
           content: [{ type: "text", text: matches ? `${file_id}: sha256 matches.` : `${file_id}: SHA-256 MISMATCH — recorded ${record.sha256}, actual ${actualSha256}` }],
           structuredContent: body,
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
+    }),
+  );
+
+  server.registerTool(
+    "rheinagent_file_duplicate_check",
+    {
+      title: "Check for duplicate file content",
+      description:
+        "Looks up every already-accepted file whose SHA-256 matches the given one, using the hash already recorded at upload_finalize time. Pass either file_id (checks that file's own hash against every other accepted file, excluding itself) or sha256 directly (e.g. to check before uploading whether this exact content already exists). Read-only — never deletes, merges, or otherwise changes anything; the caller decides what a duplicate finding means for their workflow.",
+      inputSchema: DuplicateCheckInputSchema,
+      outputSchema: DuplicateCheckResultSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    guarded("rheinagent_file_duplicate_check", "read", async ({ file_id, sha256 }) => {
+      try {
+        let targetSha256 = sha256;
+        let excludeFileId: string | undefined;
+        if (file_id) {
+          const record = await getFile(file_id);
+          if (!record || record.pendingDelete) {
+            return { content: [{ type: "text", text: `file not found: ${file_id}` }], isError: true };
+          }
+          targetSha256 = record.sha256;
+          excludeFileId = file_id;
+        }
+        const duplicates = await findFilesBySha256(targetSha256!, excludeFileId);
+        await auditInvocation("rheinagent_file_duplicate_check", { duplicate_count: duplicates.length });
+        return {
+          content: [{ type: "text", text: duplicates.length === 0 ? "no duplicates found." : `${duplicates.length} duplicate(s) found.` }],
+          structuredContent: { sha256: targetSha256!, duplicates: duplicates.map(toWireFile) },
         };
       } catch (err) {
         return { content: [{ type: "text", text: String(err) }], isError: true };

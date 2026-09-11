@@ -30,7 +30,7 @@ registriert, siehe [HANDOFF.md](HANDOFF.md)):
   "strategy": "<noch mit Manager abzustimmen>",
   "health_profile": "rheinagent-file-upload-v1",
   "protected_paths": ["data/meta/", "data/files/"],
-  "persistent_state_globs": ["data/meta/*.json", "data/files/**"],
+  "persistent_state_globs": ["data/meta/state.sqlite*", "data/files/**"],
   "service": {
     "windows": { "kind": "<tbd>", "identity": "RheinAgent File Upload" },
     "linux": { "kind": "systemd", "identity": "rheinagent-file-upload.service" }
@@ -70,7 +70,9 @@ dieses Tool-Repos selbst — dieses Repo liefert nur den Build-Input dafür.
 Der Manager führt Update/Rollback end-to-end aus (Verify → Prepare →
 Activation → Health → Commit/Rollback). Voraussetzung auf unserer Seite:
 `persistent_state_globs` im Package-v2-Manifest müssen exakt die Pfade
-abdecken, die ein Rollback erhalten muss (`data/meta/*.json`, `data/files/**`),
+abdecken, die ein Rollback erhalten muss (`data/meta/state.sqlite*` —
+Haupt-DB-Datei plus WAL-/SHM-Sidecar-Dateien, siehe
+[STATE-MIGRATION.md](STATE-MIGRATION.md) — und `data/files/**`),
 und `protected_paths` dürfen von einem Update nicht überschrieben werden.
 Diese Felder sind oben als Zielstruktur benannt, aber noch nicht gegen einen
 echten Manager-Update-Lauf verifiziert.
@@ -109,7 +111,7 @@ hier, bevor es gemacht wird.
 Vor jedem Release-Tag:
 
 - [ ] `npm run check` fehlerfrei (= `tsc --noEmit` + alle automatisierten Tests unter `test/`)
-- [ ] Manuelle End-to-End-Probe aller 16 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
+- [ ] Manuelle End-to-End-Probe aller 17 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
       für das zuletzt dokumentierte Ergebnis) — automatisierte Tests ersetzen
       das noch nicht vollständig, siehe [HANDOFF.md](HANDOFF.md) zum aktuellen
       Abdeckungsstand

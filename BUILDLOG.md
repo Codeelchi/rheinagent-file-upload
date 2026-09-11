@@ -2,6 +2,34 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — `rheinagent_file_duplicate_check` (17. Tool)
+
+Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 5 (Deduplikation)
+der priorisierten Reihenfolge.
+
+Neues, rein lesendes Tool `rheinagent_file_duplicate_check` — nutzt den
+bei `upload_finalize` bereits erfassten SHA-256 (`findFilesBySha256()` in
+`store.ts`, neu). Nimmt **genau eins** von `file_id` (findet jede andere
+akzeptierte Datei mit identischem Inhalt, schließt die Datei selbst aus)
+oder `sha256` direkt entgegen (Duplicate-Check schon *vor* einem Upload).
+Löscht/merged nie automatisch — reines Lookup, die Entscheidung bleibt
+beim Aufrufer. Input-Validierung (`Sha256Field`, `DuplicateCheckInputSchema`
+mit `.refine()` für "genau eins von beiden") als benannte, testbare
+Schemas in `src/lib/schemas.ts`, demselben Muster wie die bestehenden
+`*IdField`-Validatoren.
+
+Live end-to-end über echten HTTP-Flow verifiziert (beide Prozesse
+tatsächlich gestartet): zwei Dateien mit identischem Inhalt hochgeladen,
+`duplicate_check` per `file_id` findet die jeweils andere (nicht sich
+selbst), per `sha256` direkt findet beide, eine dritte Datei mit
+eindeutigem Inhalt liefert `duplicates: []`, beide/keins der Felder
+scheitert klar als `Input validation error`.
+
+8 neue automatisierte Tests (3 `store.test.ts`, 2 `contracts.test.ts` für
+die Schemas) — jetzt **17 Tools**, **142 automatisierte Tests**, `npm run
+check` fehlerfrei. `docs/ARCHITECTURE.md` (Tool-Tabelle),
+`src/lib/capabilities.ts` (`usage`-Schritte) aktualisiert.
+
 ## 2026-09-11 — Chunking für `text_extract`/`docx_extract_text`
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, Phase 4 (Chunking) der
