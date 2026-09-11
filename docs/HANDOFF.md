@@ -29,9 +29,10 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
 - Vollständiger aktueller Funktionsstand: alle 15 Tools implementiert und
   end-to-end verifiziert (Upload/Download/Rename/Process/Delete-Flow,
-  Health/Doctor inkl. Storage-Stats, Job-Listing, Pagination,
-  Elicitation-Bestätigung, Legacy- und moderner `2026-07-28`-Protokollpfad).
-  5 Processor registriert (Text/PDF/Image), Details: `BUILDLOG.md`
+  Health/Doctor inkl. Storage-Stats+Mime-Breakdown, filterbares
+  File-/Job-Listing, Pagination, Elicitation-Bestätigung, Legacy- und
+  moderner `2026-07-28`-Protokollpfad). 5 Processor registriert
+  (Text/PDF/Image), 69 automatisierte Tests. Details: `BUILDLOG.md`
   (neuester Eintrag oben).
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
@@ -120,6 +121,22 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## 2026-09-11 erledigt (vorher hier offen gelistet)
 
+- **Filter für `file_list`/`job_list`, Mime-Category-Storage-Breakdown.**
+  Weitere Runde funktionaler Verbesserungen:
+  - `rheinagent_file_list` filterbar nach `mime_category` (exakt) und
+    `filename_contains` (case-insensitive Substring) — Filterung läuft in
+    `listFilesPage()` vor der Pagination.
+  - `rheinagent_file_job_list` zusätzlich filterbar nach `state`
+    (`prepared`/`completed`/`failed`) und `processor_id` — z. B. "alle
+    fehlgeschlagenen Jobs" jetzt direkt abfragbar.
+  - `rheinagent_file_health_get`s `storage` liefert zusätzlich
+    `by_mime_category` (Anzahl+Bytes pro Kategorie). **Live-Bug gefangen
+    und gefixt:** `z.record(MimeCategorySchema, ...)` verlangt laut zod v4
+    alle Enum-Werte als Keys — jede reale Instanz ohne Archiv-Upload schlug
+    dadurch mit `Output validation error` fehl. Fix: `z.partialRecord(...)`.
+    Neuer Regressionstest (`test/contracts.test.ts`) prüft genau diesen Fall.
+  - 5 neue automatisierte Tests — jetzt **69 automatisierte Tests**.
+  - Live end-to-end verifiziert (inkl. des gefundenen und gefixten Bugs).
 - **PDF/Image-Processoren, Prepare-Zeit-Mime-Check, Job-Listing, Storage-
   Stats, Rename.** Fünf funktionale Verbesserungen auf einmal umgesetzt:
   1. **PDF/Image-Processoren** — `pdf` und `image` waren erlaubte

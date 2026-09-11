@@ -25,7 +25,7 @@ export const JobIdField = z.string().regex(idPattern(ID_PREFIXES.job), "must be 
 export const UploadIdField = z.string().regex(idPattern(ID_PREFIXES.upload), "must be an upload_id previously returned by this server");
 export const DeleteTokenField = z.string().regex(idPattern(ID_PREFIXES.delete), "must be a delete_token previously returned by this server");
 
-const MimeCategorySchema = z.enum(["text", "pdf", "image", "archive", "unknown"]);
+export const MimeCategorySchema = z.enum(["text", "pdf", "image", "archive", "unknown"]);
 
 // Wire shapes are deliberately snake_case throughout — matching every tool
 // *input* field (file_id, declared_size_bytes, processor_id, delete_token,
@@ -128,6 +128,14 @@ export const HealthSchema = z.object({
     file_count: z.number().int().nonnegative(),
     total_bytes: z.number().int().nonnegative(),
     staging_file_count: z.number().int().nonnegative(),
+    // partialRecord, not record: only mime categories that actually have at
+    // least one file present are keys — most instances will never see an
+    // "archive" file, and a plain z.record(enum, ...) would require every
+    // enum member as a key (Output validation error caught this live).
+    by_mime_category: z.partialRecord(MimeCategorySchema, z.object({
+      count: z.number().int().nonnegative(),
+      bytes: z.number().int().nonnegative(),
+    })),
   }),
   audit: z.object({
     mode: z.enum(["off", "hub"]),

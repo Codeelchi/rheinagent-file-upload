@@ -22,8 +22,10 @@ import {
   readJobResult,
   renameFile,
   getStorageStats,
+  listFilesPage,
+  updateJob,
 } from "../src/lib/store.js";
-import { sha256Hex } from "../src/lib/security.js";
+import { sha256Hex, type MimeCategory } from "../src/lib/security.js";
 
 // Exercises the download-ticket flow (rheinagent_file_download_prepare +
 // the data-plane GET) at the store layer, without spinning up either HTTP
@@ -31,7 +33,7 @@ import { sha256Hex } from "../src/lib/security.js";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 
-async function acceptTestFile(name: string, bytes: string) {
+async function acceptTestFile(name: string, bytes: string, mimeCategory: MimeCategory = "text") {
   await ensureDirs();
   const pending = await createPendingUpload(name, Buffer.byteLength(bytes));
   const staged = await stagingPath(pending.uploadId);
@@ -39,7 +41,7 @@ async function acceptTestFile(name: string, bytes: string) {
   return finalizeFile(pending.uploadId, {
     filename: name,
     sizeBytes: Buffer.byteLength(bytes),
-    mimeCategory: "text",
+    mimeCategory,
     sha256: sha256Hex(Buffer.from(bytes)),
   });
 }
@@ -159,7 +161,7 @@ test("listJobsPage lists jobs across files and filters by file_id", async () => 
   const jobA2 = await createJob(a.fileId, "text_uppercase");
   const jobB1 = await createJob(b.fileId, "text_stats");
 
-  const allForA = await listJobsPage(a.fileId);
+  const allForA = await listJobsPage({ fileId: a.fileId });
   const idsForA = allForA.jobs.map((j) => j.jobId).sort();
   assert.deepEqual(idsForA, [jobA1.jobId, jobA2.jobId].sort());
 
@@ -180,11 +182,11 @@ test("listJobsPage paginates via cursor/limit like listFilesPage", async () => {
   const created = [];
   for (let i = 0; i < 3; i++) created.push(await createJob(f.fileId, "text_stats"));
 
-  const page1 = await listJobsPage(f.fileId, undefined, 2);
+  const page1 = await listJobsPage({ fileId: f.fileId }, undefined, 2);
   assert.equal(page1.jobs.length, 2);
   assert.ok(page1.nextCursor);
 
-  const page2 = await listJobsPage(f.fileId, page1.nextCursor, 2);
+  const page2 = await listJobsPage({ fileId: f.fileId }, page1.nextCursor, 2);
   assert.equal(page2.jobs.length, 1);
   assert.equal(page2.nextCursor, undefined);
 
@@ -240,6 +242,73 @@ test("getStorageStats reflects accepted files and staged bytes", async () => {
   await applyDelete(t.deleteToken);
   await consumePendingUpload(pending.uploadId);
   await fs.unlink(staged).catch(() => {});
+});
+
+test("getStorageStats breaks usage down by mime_category", async () => {
+  await ensureDirs();
+  const txt = await acceptTestFile("store-test-bymime.txt", "12345", "text");
+  const pdf = await acceptTestFile("store-test-bymime.pdf", "1234567890", "pdf");
+
+  const stats = await getStorageStats();
+  assert.equal(stats.byMimeCategory.text?.count && stats.byMimeCategory.text.count >= 1, true);
+  assert.ok((stats.byMimeCategory.text?.bytes ?? 0) >= 5);
+  assert.equal(stats.byMimeCategory.pdf?.count, 1);
+  assert.equal(stats.byMimeCategory.pdf?.bytes, 10);
+
+  for (const f of [txt, pdf]) {
+    const t = await createDeleteTicket(f.fileId);
+    await applyDelete(t.deleteToken);
+  }
+});
+
+// --- rheinagent_file_list filtering ---
+
+test("listFilesPage filters by mime_category", async () => {
+  const txt = await acceptTestFile("store-test-filter.txt", "a", "text");
+  const pdf = await acceptTestFile("store-test-filter.pdf", "aa", "pdf");
+
+  const pdfOnly = await listFilesPage({ mimeCategory: "pdf" });
+  const ids = pdfOnly.files.map((f) => f.fileId);
+  assert.ok(ids.includes(pdf.fileId));
+  assert.ok(!ids.includes(txt.fileId));
+
+  for (const f of [txt, pdf]) {
+    const t = await createDeleteTicket(f.fileId);
+    await applyDelete(t.deleteToken);
+  }
+});
+
+test("listFilesPage filters by case-insensitive filename_contains", async () => {
+  const match = await acceptTestFile("Store-Test-Invoice-2026.txt", "a");
+  const noMatch = await acceptTestFile("store-test-receipt.txt", "a");
+
+  const filtered = await listFilesPage({ filenameContains: "invoice" });
+  const ids = filtered.files.map((f) => f.fileId);
+  assert.ok(ids.includes(match.fileId), "case-insensitive substring match must find it");
+  assert.ok(!ids.includes(noMatch.fileId));
+
+  for (const f of [match, noMatch]) {
+    const t = await createDeleteTicket(f.fileId);
+    await applyDelete(t.deleteToken);
+  }
+});
+
+// --- rheinagent_file_job_list filtering ---
+
+test("listJobsPage filters by state and processor_id", async () => {
+  const f = await acceptTestFile("store-test-jobfilter.txt", "a");
+  const prepared = await createJob(f.fileId, "text_stats");
+  const completed = await createJob(f.fileId, "text_uppercase");
+  await updateJob(completed.jobId, { state: "completed", completedAt: new Date().toISOString() });
+
+  const onlyCompleted = await listJobsPage({ fileId: f.fileId, state: "completed" });
+  assert.deepEqual(onlyCompleted.jobs.map((j) => j.jobId), [completed.jobId]);
+
+  const onlyTextStats = await listJobsPage({ fileId: f.fileId, processorId: "text_stats" });
+  assert.deepEqual(onlyTextStats.jobs.map((j) => j.jobId), [prepared.jobId]);
+
+  const t = await createDeleteTicket(f.fileId);
+  await applyDelete(t.deleteToken);
 });
 
 test.after(async () => {

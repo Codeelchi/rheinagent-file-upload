@@ -2,6 +2,52 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Filter für file_list/job_list, Mime-Category-Storage-Breakdown
+
+Auftrag: Funktionen des MCP weiter verbessern (Fortsetzung der letzten
+Runde). Drei Erweiterungen:
+
+**1. `rheinagent_file_list` filterbar.** Neue optionale Input-Felder
+`mime_category` (exakt) und `filename_contains` (case-insensitive
+Substring). `listFilesPage()` (`store.ts`) nimmt jetzt einen `FileListFilter`
+als ersten Parameter; Filterung läuft vor der Pagination, sodass
+`cursor`/`next_cursor` über die gefilterte Menge laufen. Live verifiziert:
+`filename_contains=invoice` findet `Invoice-2026-09.txt` case-insensitiv,
+lässt `receipt.txt` aus; `mime_category=text` liefert beide Textdateien.
+
+**2. `rheinagent_file_job_list` filterbar.** Neue optionale Input-Felder
+`state` (`prepared`/`completed`/`failed`) und `processor_id`, zusätzlich
+zum bestehenden `file_id`. `listJobsPage()` nimmt jetzt einen
+`JobListFilter` (`fileId?`, `state?`, `processorId?`) statt nur `fileId?`
+— Breaking Change der internen Signatur, alle Call-Sites (`server.ts`,
+`test/store.test.ts`) angepasst. Live verifiziert: `state=completed`
+findet nur den fertigen Job, `processor_id=text_uppercase` nur den
+laufenden.
+
+**3. `rheinagent_file_health_get`s `storage.by_mime_category`.**
+`getStorageStats()` schlüsselt Anzahl+Bytes jetzt zusätzlich pro
+`mime_category` auf. **Live-Bug gefangen und gefixt:** Erste Version nutzte
+`z.record(MimeCategorySchema, ...)` im `HealthSchema` — zod v4 verlangt bei
+einem Record mit Enum-Key-Schema laut Spec **alle** Enum-Werte als
+vorhandene Keys, nicht nur die tatsächlich befüllten. Jede reale Instanz
+(die z. B. nie eine `.zip` hochgeladen bekam) scheiterte dadurch mit
+`Output validation error: ... storage.by_mime_category.archive: expected
+object, received undefined` — live beim End-to-End-Test aufgefallen, sofort
+auf `z.partialRecord(...)` korrigiert und erneut verifiziert. Neuer
+Regressionstest in `test/contracts.test.ts` prüft genau dieses Szenario
+(nur `text` befüllt, `HealthSchema.safeParse` muss erfolgreich sein).
+
+**Getestet:** Live end-to-end gegen beide laufenden Prozesse (Filter-
+Kombinationen für beide List-Tools, `health_get` vor und nach dem
+Schema-Fix). 5 neue automatisierte Tests (`test/store.test.ts`: 2×
+`listFilesPage`-Filter, 1× `listJobsPage`-Filter, 1×
+`getStorageStats`-Breakdown; `test/contracts.test.ts`: 1× Regressionstest)
+— jetzt **69 automatisierte Tests, alle grün**; `npm run check` fehlerfrei.
+
+**Doku aktualisiert:** `docs/ARCHITECTURE.md` (Tool-Vertragstabelle,
+List-Filter-Absatz, Health/Doctor-Absatz um `by_mime_category` ergänzt),
+`README.md`, `docs/HANDOFF.md`.
+
 ## 2026-09-11 — PDF/Image-Processoren, Job-Listing, Storage-Stats, Rename
 
 Auftrag: weitere Verbesserungen für die *Funktionen* des MCP (nicht

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FileIdField, JobIdField, UploadIdField, DeleteTokenField } from "../src/lib/schemas.js";
+import { FileIdField, JobIdField, UploadIdField, DeleteTokenField, HealthSchema } from "../src/lib/schemas.js";
 import { toWireFile, toWireJob, toWireDeleteTicket } from "../src/lib/wire.js";
 import { newFileId, newJobId, newUploadId, newDeleteToken } from "../src/lib/ids.js";
 import type { FileRecord, JobRecord, DeleteTicket } from "../src/lib/store.js";
@@ -79,4 +79,30 @@ test("toWireDeleteTicket produces the snake_case DeleteTicketResultSchema shape"
     file_id: ticket.fileId,
     created_at: "2026-01-01T00:00:00.000Z",
   });
+});
+
+// Regression test: HealthSchema.storage.by_mime_category must accept a
+// partial object (only mime categories that actually have a file present)
+// — a plain z.record(MimeCategorySchema, ...) instead of z.partialRecord
+// requires every enum member as a key and rejects any real instance that
+// hasn't seen an "archive" upload, which live testing caught as an
+// "Output validation error" on rheinagent_file_health_get.
+test("HealthSchema accepts storage.by_mime_category with only some categories present", () => {
+  const body = {
+    health_profile: "rheinagent-file-upload-v1",
+    status: "ok" as const,
+    control_plane_reachable: true as const,
+    data_plane_reachable: true,
+    staging_dir_writable: true,
+    files_dir_writable: true,
+    storage: {
+      file_count: 2,
+      total_bytes: 30,
+      staging_file_count: 0,
+      by_mime_category: { text: { count: 2, bytes: 30 } },
+    },
+    audit: { mode: "off" as const },
+  };
+  const parsed = HealthSchema.safeParse(body);
+  assert.equal(parsed.success, true, parsed.success ? undefined : JSON.stringify(parsed.error.issues));
 });

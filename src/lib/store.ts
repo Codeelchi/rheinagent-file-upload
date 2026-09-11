@@ -196,21 +196,35 @@ export async function listFiles(): Promise<FileRecord[]> {
 
 const DEFAULT_PAGE_SIZE = 50;
 
+export interface FileListFilter {
+  mimeCategory?: MimeCategory;
+  /** Case-insensitive substring match against `filename`. */
+  filenameContains?: string;
+}
+
 /**
  * Deterministic, cursor-paginated file listing — mirrors the MCP
  * `tools/list`-style pagination utility (cursor/nextCursor) so
  * `rheinagent_file_list` doesn't grow unboundedly through MCP JSON as the
  * accepted-files set grows. Sort order (createdAt, then fileId as a
  * tiebreaker) is fixed so the same cursor always resumes at the same point
- * even if new files are uploaded concurrently.
+ * even if new files are uploaded concurrently. Filtering happens *before*
+ * pagination, so `cursor`/`next_cursor` walk the filtered result set, not
+ * the full one — a client narrowing down "which of my many files are PDFs
+ * named 'invoice'" doesn't have to page through everything else first.
  */
 export async function listFilesPage(
+  filter: FileListFilter = {},
   cursor?: string,
   limit: number = DEFAULT_PAGE_SIZE,
 ): Promise<{ files: FileRecord[]; nextCursor?: string }> {
-  const all = (await listFiles()).sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.fileId.localeCompare(b.fileId),
-  );
+  let all = await listFiles();
+  if (filter.mimeCategory) all = all.filter((f) => f.mimeCategory === filter.mimeCategory);
+  if (filter.filenameContains) {
+    const needle = filter.filenameContains.toLowerCase();
+    all = all.filter((f) => f.filename.toLowerCase().includes(needle));
+  }
+  all = all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.fileId.localeCompare(b.fileId));
   let startIndex = 0;
   if (cursor) {
     const idx = all.findIndex((f) => f.fileId === cursor);
@@ -257,12 +271,25 @@ export async function renameFile(fileId: string, newFilename: string): Promise<F
 /** Live disk-usage snapshot for the health tool — counts every accepted
  * file (including ones currently `pendingDelete`, since their bytes are
  * still on disk until `delete_apply` actually runs) plus how many bytes
- * are currently sitting in staging (in-flight or not-yet-swept uploads). */
-export async function getStorageStats(): Promise<{ fileCount: number; totalBytes: number; stagingFileCount: number }> {
+ * are currently sitting in staging (in-flight or not-yet-swept uploads).
+ * Also broken down per mime_category, so a client can tell "what's taking
+ * up the space" without paginating through rheinagent_file_list itself. */
+export async function getStorageStats(): Promise<{
+  fileCount: number;
+  totalBytes: number;
+  stagingFileCount: number;
+  byMimeCategory: Partial<Record<MimeCategory, { count: number; bytes: number }>>;
+}> {
   const all = await files.values();
   const totalBytes = all.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const byMimeCategory: Partial<Record<MimeCategory, { count: number; bytes: number }>> = {};
+  for (const f of all) {
+    const bucket = (byMimeCategory[f.mimeCategory] ??= { count: 0, bytes: 0 });
+    bucket.count++;
+    bucket.bytes += f.sizeBytes;
+  }
   const staged = await fs.readdir(STAGING_DIR).catch(() => [] as string[]);
-  return { fileCount: all.length, totalBytes, stagingFileCount: staged.length };
+  return { fileCount: all.length, totalBytes, stagingFileCount: staged.length, byMimeCategory };
 }
 
 /**
@@ -358,21 +385,30 @@ export async function getJob(jobId: string): Promise<JobRecord | undefined> {
   return jobs.get(jobId);
 }
 
+export interface JobListFilter {
+  fileId?: string;
+  state?: JobRecord["state"];
+  processorId?: string;
+}
+
 /**
- * Cursor-paginated job listing, optionally scoped to one file_id — the
- * `rheinagent_file_list` counterpart for jobs. Without this, losing a
- * job_id (or simply wanting "what jobs exist for this file") had no
- * recovery path other than re-running rheinagent_file_process_prepare and
- * creating a duplicate job. Same sort/pagination shape as
- * `listFilesPage()` (createdAt, then jobId as tiebreaker) for consistency.
+ * Cursor-paginated job listing, optionally scoped to file_id/state/
+ * processor_id — the `rheinagent_file_list` counterpart for jobs. Without
+ * this, losing a job_id (or simply wanting "what jobs exist for this
+ * file", or "which jobs failed") had no recovery path other than
+ * re-running rheinagent_file_process_prepare and creating a duplicate job.
+ * Same sort/pagination shape as `listFilesPage()` (createdAt, then jobId
+ * as tiebreaker) for consistency, filtered before paginating.
  */
 export async function listJobsPage(
-  fileId?: string,
+  filter: JobListFilter = {},
   cursor?: string,
   limit: number = DEFAULT_PAGE_SIZE,
 ): Promise<{ jobs: JobRecord[]; nextCursor?: string }> {
   let all = await jobs.values();
-  if (fileId) all = all.filter((j) => j.fileId === fileId);
+  if (filter.fileId) all = all.filter((j) => j.fileId === filter.fileId);
+  if (filter.state) all = all.filter((j) => j.state === filter.state);
+  if (filter.processorId) all = all.filter((j) => j.processorId === filter.processorId);
   all = all.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.jobId.localeCompare(b.jobId));
   let startIndex = 0;
   if (cursor) {

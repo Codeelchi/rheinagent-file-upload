@@ -51,14 +51,14 @@ Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/
 | `rheinagent_file_health_get` | Health/Doctor: Plane-Erreichbarkeit, Verzeichnis-Schreibbarkeit, Audit-Status |
 | `rheinagent_file_upload_prepare` | Upload ankündigen, opake `upload_id` + Data-Plane-URL erhalten |
 | `rheinagent_file_upload_finalize` | Staged Bytes validieren und final übernehmen |
-| `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten) |
+| `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten), filterbar nach `mime_category`/`filename_contains` |
 | `rheinagent_file_get` | Metadaten (und kleine Text-Inhalte) abrufen |
 | `rheinagent_file_rename` | Anzeigenamen ändern (nie Bytes/`mime_category`) |
 | `rheinagent_file_download_prepare` | `download_token` + Data-Plane-URL für große/binäre Dateien erhalten |
 | `rheinagent_file_process_prepare` | Verarbeitungsjob für einen registrierten Processor anlegen |
 | `rheinagent_file_process_apply` | Job ausführen, Ergebnis atomar speichern |
 | `rheinagent_file_job_get` | Job-Status abrufen |
-| `rheinagent_file_job_list` | Jobs auflisten, optional nach `file_id` gefiltert |
+| `rheinagent_file_job_list` | Jobs auflisten, filterbar nach `file_id`/`state`/`processor_id` |
 | `rheinagent_file_result_get` | Job-Ergebnis abrufen |
 | `rheinagent_file_delete_prepare` | Löschung vorbereiten (`delete_token`) |
 | `rheinagent_file_delete_apply` | Löschung mit `delete_token` final ausführen |

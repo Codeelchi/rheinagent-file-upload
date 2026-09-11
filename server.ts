@@ -57,6 +57,7 @@ import {
   DownloadPrepareResultSchema,
   HealthSchema,
   JobListResultSchema,
+  MimeCategorySchema,
   FileIdField,
   JobIdField,
   UploadIdField,
@@ -126,7 +127,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Health / doctor check",
       description:
-        "Checks control/data-plane reachability, staging/files directory writability, current storage usage (file count, total bytes, staged-file count), and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
+        "Checks control/data-plane reachability, staging/files directory writability, current storage usage (file count, total bytes, staged-file count, breakdown by mime_category), and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
       inputSchema: z.object({}),
       outputSchema: HealthSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -171,6 +172,7 @@ function registerTools(server: McpServer): void {
           file_count: storage.fileCount,
           total_bytes: storage.totalBytes,
           staging_file_count: storage.stagingFileCount,
+          by_mime_category: storage.byMimeCategory,
         },
         audit,
       };
@@ -277,13 +279,19 @@ function registerTools(server: McpServer): void {
     "rheinagent_file_list",
     {
       title: "List files",
-      description: "Lists accepted files (metadata only), paginated via cursor/next_cursor.",
-      inputSchema: z.object({ cursor: z.string().optional(), limit: z.number().int().positive().max(200).optional() }),
+      description:
+        "Lists accepted files (metadata only), optionally filtered by mime_category and/or a case-insensitive filename_contains substring, paginated via cursor/next_cursor. Filtering happens before pagination.",
+      inputSchema: z.object({
+        mime_category: MimeCategorySchema.optional(),
+        filename_contains: z.string().min(1).optional(),
+        cursor: z.string().optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      }),
       outputSchema: FileListResultSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
-    guarded("rheinagent_file_list", "read", async ({ cursor, limit }) => {
-      const page = await listFilesPage(cursor, limit);
+    guarded("rheinagent_file_list", "read", async ({ mime_category, filename_contains, cursor, limit }) => {
+      const page = await listFilesPage({ mimeCategory: mime_category, filenameContains: filename_contains }, cursor, limit);
       await auditInvocation("rheinagent_file_list", { result_count: page.files.length });
       const body = { files: page.files.map(toWireFile), next_cursor: page.nextCursor };
       return { content: [{ type: "text", text: `${page.files.length} file(s).` }], structuredContent: body };
@@ -463,13 +471,19 @@ function registerTools(server: McpServer): void {
     {
       title: "List processing jobs",
       description:
-        "Lists processing jobs, optionally filtered to one file_id, paginated via cursor/next_cursor. Use this to find a job_id again if it was lost, or to see every job ever run against a file.",
-      inputSchema: z.object({ file_id: FileIdField.optional(), cursor: z.string().optional(), limit: z.number().int().positive().max(200).optional() }),
+        "Lists processing jobs, optionally filtered by file_id/state/processor_id, paginated via cursor/next_cursor. Use this to find a job_id again if it was lost, to see every job ever run against a file, or to find e.g. every failed job (state=\"failed\").",
+      inputSchema: z.object({
+        file_id: FileIdField.optional(),
+        state: z.enum(["prepared", "completed", "failed"]).optional(),
+        processor_id: z.string().optional(),
+        cursor: z.string().optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      }),
       outputSchema: JobListResultSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
-    guarded("rheinagent_file_job_list", "read", async ({ file_id, cursor, limit }) => {
-      const page = await listJobsPage(file_id, cursor, limit);
+    guarded("rheinagent_file_job_list", "read", async ({ file_id, state, processor_id, cursor, limit }) => {
+      const page = await listJobsPage({ fileId: file_id, state, processorId: processor_id }, cursor, limit);
       await auditInvocation("rheinagent_file_job_list", { result_count: page.jobs.length });
       const body = { jobs: page.jobs.map(toWireJob), next_cursor: page.nextCursor };
       return { content: [{ type: "text", text: `${page.jobs.length} job(s).` }], structuredContent: body };

@@ -126,12 +126,17 @@ die Data Plane `404` bzw. `410`.
 per Definition `true` (das Tool antwortet gerade), `data_plane_reachable`
 prüft `GET /healthz` auf der Data Plane (2 s Timeout), `staging_dir_writable`/
 `files_dir_writable` prüfen per `fs.access(dir, W_OK)` ohne eine Probe-Datei
-zu hinterlassen. `storage` (seit 2026-09-11: `file_count`, `total_bytes`,
+zu hinterlassen. `storage` (`file_count`, `total_bytes`,
 `staging_file_count`, aus `getStorageStats()` in `store.ts`) gibt einem
 Client den aktuellen Verbrauch, ohne dafür `rheinagent_file_list`
 komplett durchpaginieren zu müssen — `file_count`/`total_bytes` zählen
 auch gerade `pendingDelete`-Dateien mit, deren Bytes bis zum tatsächlichen
-`delete_apply` noch belegt sind. Im `hub`-Audit-Modus meldet das Tool
+`delete_apply` noch belegt sind. `storage.by_mime_category` (seit
+2026-09-11) schlüsselt Anzahl/Bytes zusätzlich pro `mime_category` auf —
+ein **partielles** Objekt (`z.partialRecord`, nicht `z.record`): nur
+Kategorien mit mindestens einer Datei tauchen als Key auf, eine Instanz
+ohne Archiv-Uploads hat also nie einen `archive`-Key. Im `hub`-Audit-Modus
+meldet das Tool
 zusätzlich, **ob**
 `RA_AUDIT_ENDPOINT`/`RA_AUDIT_SERVICE_ID`/`RA_AUDIT_CREDENTIAL_PATH` gesetzt
 sind (nie die Werte selbst) sowie `hub_endpoint_reachable` — ein bewusst
@@ -228,23 +233,28 @@ erst über einen `rate limit exceeded`-Fehler zu lernen.
 | `rheinagent_file_health_get` | — | `HealthSchema` | readOnly, idempotent | read |
 | `rheinagent_file_upload_prepare` | `filename`, `declared_size_bytes` | `UploadPrepareResultSchema` | — | write |
 | `rheinagent_file_upload_finalize` | `upload_id` | `FileRecordSchema` | — | critical |
-| `rheinagent_file_list` | `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
+| `rheinagent_file_list` | `mime_category?`, `filename_contains?`, `cursor?`, `limit?` | `FileListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
 | `rheinagent_file_rename` | `file_id`, `new_filename` | `FileRecordSchema` | idempotent | write |
 | `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
 | `rheinagent_file_process_prepare` | `file_id`, `processor_id` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |
 | `rheinagent_file_job_get` | `job_id` | `JobRecordSchema` | readOnly, idempotent | read |
-| `rheinagent_file_job_list` | `file_id?`, `cursor?`, `limit?` | `JobListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
+| `rheinagent_file_job_list` | `file_id?`, `state?`, `processor_id?`, `cursor?`, `limit?` | `JobListResultSchema` (mit `next_cursor`) | readOnly, idempotent | read |
 | `rheinagent_file_result_get` | `job_id` | `JobResultEnvelopeSchema` | readOnly, idempotent | read |
 | `rheinagent_file_delete_prepare` | `file_id` | `DeleteTicketResultSchema` | — | write |
 | `rheinagent_file_delete_apply` | `delete_token` | `FileListResultSchema` (verbleibende Dateien) | **destructiveHint: true**, verlangt Elicitation-Bestätigung | critical |
 
 `rheinagent_file_list` ist cursor-paginiert (`next_cursor` in der Antwort,
 als `cursor` beim nächsten Aufruf mitgeben) — wächst dadurch nicht
-unbegrenzt durch MCP-JSON, selbst bei vielen akzeptierten Dateien.
-`rheinagent_file_job_list` folgt demselben Muster (optional zusätzlich nach
-`file_id` gefiltert) — ohne dieses Tool gab es keinen Weg zurück, wenn eine
+unbegrenzt durch MCP-JSON, selbst bei vielen akzeptierten Dateien. Seit
+2026-09-11 zusätzlich filterbar: `mime_category` (exakt) und
+`filename_contains` (case-insensitive Substring) — Filterung passiert in
+`listFilesPage()` **vor** der Pagination, sodass `cursor`/`next_cursor`
+über die gefilterte Ergebnismenge laufen, nicht über den kompletten
+Bestand. `rheinagent_file_job_list` folgt demselben Muster (zusätzlich
+`file_id`/`state`/`processor_id` filterbar, z. B. um alle fehlgeschlagenen
+Jobs zu finden) — ohne dieses Tool gab es keinen Weg zurück, wenn eine
 `job_id` verloren ging. Details zu Rate-Limiting und der Löschbestätigung:
 [SECURITY.md](SECURITY.md).
 
