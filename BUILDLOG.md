@@ -2,6 +2,37 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-11 — Versions-Bump `0.3.0`, README/HANDOFF auf aktuellen Stand
+
+Abschluss der mehrteiligen Ausbaurunde zum File-Intake-/Analyse-Layer
+(SQLite-Migration, 6 neue Extraction-Processoren, Chunking,
+Duplikat-Erkennung, Knowledge-Handoff-Contract, Docker/Compose,
+Health/Capabilities-Erweiterung — siehe die jeweiligen Einträge unten).
+
+- **`package.json`/`package-lock.json` `0.2.0` → `0.3.0`** (MINOR: echte
+  Feature-Erweiterung + additive, aber bei strikter Validierung sichtbare
+  Schema-Erweiterung, siehe `docs/VERSIONING.md` für die volle Begründung).
+  `PRODUCT_VERSION` (liest jetzt `package.json` zur Laufzeit) macht das
+  automatisch überall sichtbar, wo es referenziert wird — kein manuelles
+  Nachziehen mehr nötig außer in `docs/VERSIONING.md` selbst.
+- **`README.md` komplett neu geschrieben** — der vorherige Stand nannte
+  nur 5 Processor und 15 Tools und war seit mehreren Runden nicht mehr
+  aktuell. Jetzt: alle 18 Tools, alle 11 Processor, Docker-Schnellstart,
+  vollständige Dokuverlinkung (`PROCESSORS.md`/`KNOWLEDGE-INTEGRATION.md`/
+  `STATE-MIGRATION.md` waren dort noch gar nicht verlinkt).
+- **`docs/HANDOFF.md`s "Einstieg für eine neue Session" überarbeitet** —
+  verwies noch auf einen längst nicht mehr relevanten lokalen Pfad
+  (`/home/Technowolf/mcp-ui-test` auf `berry`, aus einer Zeit vor diesem
+  GitHub-Workflow) und einen veralteten Funktionsstand (16 Tools/86 Tests).
+  Jetzt akkurat, inkl. ehrlicher Liste dessen, was in dieser Ausbaurunde
+  bewusst **nicht** umgesetzt wurde (kein echter `docker build` gegen einen
+  Daemon, keine Cursor-Paginierung für `csv_inspect`/`xlsx_inspect`, kein
+  generischer Entpack-Processor, kein Schema-Migrationsframework, keine
+  UI, keine Cross-Repo-Schritte).
+
+`npm run check` weiterhin fehlerfrei (155 Tests, keine neuen — reine
+Doku-/Versions-Pflege).
+
 ## 2026-09-11 — Health/Capabilities erweitert, Symlink-Sicherheitstests
 
 Auftrag: Ausbau zum File-Intake-/Analyse-Layer, restliche kleinere Punkte

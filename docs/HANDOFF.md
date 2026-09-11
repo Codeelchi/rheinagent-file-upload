@@ -7,34 +7,48 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 
 ## Einstieg für eine neue Session
 
-- Letzter Commit auf `main`: siehe `git log -1` — Arbeitsverzeichnis zum
-  Zeitpunkt dieses Eintrags sauber, lokal = `origin/main`, keine offenen
-  Änderungen.
-- Lokaler Checkout: `/home/Technowolf/mcp-ui-test` auf `berry`.
+- Letzter Commit auf `claude/mcp-server-continuation-fb3oq2` (noch nicht
+  nach `main` gemerged — siehe `git log -1` für den tatsächlichen Stand;
+  dieser Hinweis nicht blind als aktuell voraussetzen): Arbeitsverzeichnis
+  sauber, jede Runde committed + gepusht.
 - Server starten: `npm run serve` (Control Plane, Port 3901) **und**
   `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für
   Uploads/Downloads. `npm run check` bündelt Typecheck + Tests (= das
-  Release-Gate aus [VERSIONING.md](VERSIONING.md)) in einem Befehl; `npm
-  test`/`npm run typecheck` einzeln bei Bedarf.
-- Arbeits-Workflow für dieses Repo (siehe auch Memory
-  `feedback_mcp_ui_test_workflow`): jede Änderungsrunde endet mit einem
+  Release-Gate aus [VERSIONING.md](VERSIONING.md)) in einem Befehl. Für
+  Produktionsbetrieb: `npm run build` + `npm run start`/`start:dataplane`
+  (reines `node`, kein `tsx`/`typescript` zur Laufzeit) oder
+  `docker compose up --build` (siehe [INSTALLATION.md](INSTALLATION.md) —
+  **Docker/Compose selbst noch nicht gegen einen echten Docker-Daemon
+  verifiziert**, siehe unten).
+- Arbeits-Workflow für dieses Repo: jede Änderungsrunde endet mit einem
   `BUILDLOG.md`-Eintrag + Push nach `github.com/Codeelchi/rheinagent-file-upload`,
   ohne dass der Nutzer danach fragen muss.
-- **Wichtigster nächster fachlicher Schritt:** Audit-Hub-Live-Verifikation
-  (`src/lib/audit.ts` ist nur gegen die Dokumentation implementiert, nie
-  gegen eine laufende `rheinagent-audit`-Instanz getestet) — siehe Abschnitt
-  "Offene Cross-Repo-Integrationsarbeit" Punkt 4 unten. Diese Session hatte
-  dazu keinen Zugriff auf eine laufende Hub-Instanz (kein `rheinagent-audit`-
-  Profil in den verfügbaren MCP-Connectoren) und hat stattdessen den
-  nächsten unblockierten Punkt erledigt (Download-Endpunkt, siehe unten).
-- Vollständiger aktueller Funktionsstand: alle 16 Tools implementiert und
-  end-to-end verifiziert (Upload/Download/Rename/Verify/Process/Delete-Flow,
-  Health/Doctor inkl. Storage-Stats+Mime-Breakdown, filterbares
-  File-/Job-Listing, parametrisierbare Processor-Optionen (Seitenauswahl
-  bei `pdf_extract_text`), Pagination, Elicitation-Bestätigung, Legacy- und
-  moderner `2026-07-28`-Protokollpfad). 5 Processor registriert
-  (Text/PDF/Image), 86 automatisierte Tests. Details: `BUILDLOG.md`
-  (neuester Eintrag oben).
+- **Wichtigster nächster fachlicher Schritt (unverändert seit mehreren
+  Runden):** Audit-Hub-Live-Verifikation (`src/lib/audit.ts` ist nur gegen
+  die Dokumentation implementiert, nie gegen eine laufende
+  `rheinagent-audit`-Instanz getestet) — siehe Abschnitt "Offene
+  Cross-Repo-Integrationsarbeit" Punkt 4 unten. Bisher hatte keine Session
+  Zugriff auf eine laufende Hub-Instanz und hat stattdessen den jeweils
+  nächsten unblockierten, reinen In-Repo-Punkt erledigt.
+- Vollständiger aktueller Funktionsstand (2026-09-11, mehrteiliger Ausbau
+  zum "File Intake & Analysis Layer"): **18 Tools**, **11 Processor**
+  (Text/Markdown/CSV/JSON/PDF/Image/DOCX/XLSX), **155 automatisierte
+  Tests**, `npm run check` fehlerfrei. SQLite-Metadatenpersistenz (statt
+  JSON), Chunking für lange Dokumente, Duplikat-Erkennung, ein
+  nicht-autoritativer Knowledge-Handoff-Contract, Docker/Compose-Setup
+  (Build lokal verifiziert, echter `docker build`/`compose up` nur über
+  den neuen CI-Job abgedeckt), erweitertes Health/Doctor
+  (`product_version`/`state_schema_version`/Job-Stats). Details je Runde:
+  `BUILDLOG.md` (neuester Eintrag oben) — dort auch, was jeweils **live
+  end-to-end verifiziert** wurde vs. nur implementiert.
+- **Bewusst nicht umgesetzt in diesem Ausbau** (ehrlich benannt, nicht als
+  erledigt behauptet): echter `docker build`/`docker compose up` gegen
+  einen laufenden Daemon (kein Daemon in dieser Session verfügbar); eine
+  Cursor-Paginierung für `csv_inspect`/`xlsx_inspect` über die aktuelle
+  20-Zeilen-Stichprobe hinaus; ein generischer Entpack-Processor für
+  beliebige Archive (nur `.docx`/`.xlsx` als eng zugeschnittene Ausnahme,
+  siehe [SECURITY.md](SECURITY.md)); MCP-App-UI (siehe unten, weiterhin
+  bewusst zurückgestellt); jede Cross-Repo-Integration (siehe unten).
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
 
@@ -102,15 +116,29 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## Innerhalb dieses Repos noch offen (nicht Cross-Repo, aber unerledigt)
 
-- **Kein Docker-Setup** für Control-/Data-Plane als zwei Services.
+- **Docker/Compose noch nicht gegen einen echten Daemon verifiziert** —
+  siehe [INSTALLATION.md](INSTALLATION.md). Nächster Schritt: einmal
+  `docker compose up --build` fahren und den vollen
+  Upload→Process→Download-Flow durchspielen.
 - **Keine MCP-App-UI** für die aktuelle Tool-Menge (der frühere Prototyp mit
   anderen Tool-Namen wurde entfernt, siehe [BUILDLOG.md](../BUILDLOG.md)).
   UI ist laut Vorgabe optional — Business-Funktionen sind vollständig ohne
   UI nutzbar; eine Wiederanbindung ist rein additiv und blockiert nichts.
-- **Archiv-/Entpack-Processor nicht vorhanden** — Archivformate werden
-  komplett abgelehnt (siehe [SECURITY.md](SECURITY.md)); sobald ein
-  Entpack-Processor gewünscht ist, müssen dafür echte Archive-Bomb-Limits
-  (Tiefe, Gesamtgröße entpackt, Dateianzahl) neu entworfen werden.
+  Bei Bedarf: `docs/ARCHITECTURE.md` Abschnitt "Runtime-Layer" für die
+  Control-/Data-Plane-Trennung lesen, die eine UI respektieren müsste
+  (kein permissives CORS wieder einführen, siehe [SECURITY.md](SECURITY.md)).
+- **Generischer Archiv-/Entpack-Processor nicht vorhanden** — nur `.docx`/
+  `.xlsx` sind als eng zugeschnittene, bounded Ausnahme vom generellen
+  Archive-Ablehnen implementiert (siehe [SECURITY.md](SECURITY.md)); ein
+  echter `.zip`/`.tar`-Entpack-Processor bräuchte eigene, neu entworfene
+  Größen-/Tiefenlimits.
+- **`csv_inspect`/`xlsx_inspect` ohne Cursor-Paginierung** über die feste
+  20-Zeilen-Stichprobe hinaus — bislang kein bekanntes reales Bedürfnis,
+  siehe [PROCESSORS.md](PROCESSORS.md) Abschnitt "Chunking".
+- **Kein Schema-Versions-/Migrationsframework** für die SQLite-Tabellen
+  über `CREATE TABLE IF NOT EXISTS` hinaus — bei nur fünf simplen
+  Key-Value-Tabellen aktuell nicht nötig, siehe
+  [STATE-MIGRATION.md](STATE-MIGRATION.md).
 - **Keine Mandanten-/Nutzertrennung** — einzige, geteilte Namespace pro
   Instanz (siehe [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md)).
 
@@ -310,12 +338,17 @@ sicherheitskritisch.
 
 ## Nächster Schritt nach jedem obigen Punkt
 
-Reihenfolge-Empfehlung: (1) Audit-Hub-Live-Verifikation, weil sie die
-Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber nur
-mit Zugriff auf eine laufende `rheinagent-audit`-Instanz machbar, den diese
-Session nicht hatte → (2) License/Manager/Update-Feed-Registrierung, weil sie
-Voraussetzung für jeden echten Kunden-Test ist → (3) Docker-Setup, weil es
-den Betrieb erleichtert, aber nichts Funktionales freischaltet → (4)
-UI-Wiederanbindung, da explizit optional. Download-Endpunkt, Health/Doctor-
-Tool und CI-Workflow (vormals Punkt 3) sind seit 2026-09-11 erledigt, siehe
-oben.
+Reihenfolge-Empfehlung, Stand 2026-09-11 nach dem Ausbau zum File-Intake-/
+Analyse-Layer: (1) Audit-Hub-Live-Verifikation, weil sie die
+Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber
+weiterhin nur mit Zugriff auf eine laufende `rheinagent-audit`-Instanz
+machbar, den bisher keine Session hatte → (2) Docker/Compose einmal gegen
+einen echten Daemon fahren (siehe "Innerhalb dieses Repos noch offen"
+oben) — reine Verifikation, keine neue Implementierung nötig → (3)
+License/Manager/Update-Feed-Registrierung, weil sie Voraussetzung für
+jeden echten Kunden-Test ist → (4) UI-Wiederanbindung, da explizit
+optional. Download-Endpunkt, Health/Doctor-Tool, CI-Workflow,
+SQLite-Migration, Document-Extraction-Processoren (CSV/JSON/Markdown/
+DOCX/XLSX), Chunking, Duplikat-Erkennung, Knowledge-Handoff-Contract und
+Docker/Compose-Implementierung (vormals Teile von Punkt 3) sind seit
+2026-09-11 erledigt, siehe `BUILDLOG.md`.

@@ -3,11 +3,21 @@
 ## Kanonische Versionsquelle
 
 `package.json#version` in diesem Repo ist die kanonische Versionsquelle.
-SemVer (`MAJOR.MINOR.PATCH`, Pre-Releases als `-rc.N`). Aktuell: `0.2.0`
+SemVer (`MAJOR.MINOR.PATCH`, Pre-Releases als `-rc.N`). Aktuell: `0.3.0`
 (noch nicht bei Manager/License Service/Update Feed registriert — siehe
 [LICENSE-FLOW.md](LICENSE-FLOW.md)). Dieser Wert muss bei jeder
 `package.json`-Versionsänderung manuell mitgezogen werden — es gibt keine
 automatisierte Drift-Prüfung zwischen den beiden Dateien.
+
+`0.2.0` → `0.3.0` (2026-09-11): MINOR wegen echter Feature-Erweiterung
+(6 neue Processor, 2 neue Tools — `duplicate_check`,
+`knowledge_handoff_prepare` —, neue `mime_category: "office"`) **und**
+additiver, aber bei strikter Schema-Validierung sichtbarer Erweiterung von
+`CapabilitiesSchema`/`HealthSchema` (neue Pflichtfelder
+`product_version`/`state_schema_version`/`processor_registry`/`jobs`).
+Da das Produkt noch vor Stable steht (siehe unten, "Release-Historie":
+noch kein getaggtes Release), ist das eine zulässige Contract-Bereinigung,
+keine nachträgliche Breaking-Change-Behandlung nötig.
 Ein Release-Tag in Git muss exakt `v<version>` aus `package.json`
 entsprechen; eine Abweichung ist ein Build-Abbruch-Kriterium, nicht etwas,
 das die Release-Pipeline stillschweigend korrigiert.
