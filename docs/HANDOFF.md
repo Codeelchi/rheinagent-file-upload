@@ -5,6 +5,28 @@ Stand: 2026-09-11. Dieses Dokument listet **alles**, was außerhalb von
 für echte Kunden nutzbar ist. Dieses Repo nimmt keine der folgenden Änderungen
 selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 
+## Einstieg für eine neue Session
+
+- Letzter Commit auf `main`: `3c7fb9e` ("Migrate to MCP protocol 2026-07-28
+  and close spec-compliance gaps") — Arbeitsverzeichnis zum Zeitpunkt dieses
+  Eintrags sauber, lokal = `origin/main`, keine offenen Änderungen.
+- Lokaler Checkout: `/home/Technowolf/mcp-ui-test` auf `berry`.
+- Server starten: `npm run serve` (Control Plane, Port 3901) **und**
+  `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für Uploads.
+  `npm test` für die 26 automatisierten Tests, `npx tsc --noEmit` für den Typecheck.
+- Arbeits-Workflow für dieses Repo (siehe auch Memory
+  `feedback_mcp_ui_test_workflow`): jede Änderungsrunde endet mit einem
+  `BUILDLOG.md`-Eintrag + Push nach `github.com/Codeelchi/rheinagent-file-upload`,
+  ohne dass der Nutzer danach fragen muss.
+- **Wichtigster nächster fachlicher Schritt:** Audit-Hub-Live-Verifikation
+  (`src/lib/audit.ts` ist nur gegen die Dokumentation implementiert, nie
+  gegen eine laufende `rheinagent-audit`-Instanz getestet) — siehe Abschnitt
+  "Offene Cross-Repo-Integrationsarbeit" Punkt 4 unten.
+- Vollständiger aktueller Funktionsstand: alle 11 Tools implementiert und
+  end-to-end verifiziert (Upload/Process/Delete-Flow, Pagination,
+  Elicitation-Bestätigung, Legacy- und moderner `2026-07-28`-Protokollpfad).
+  Details: `BUILDLOG.md` (neuester Eintrag oben).
+
 ## Verbindlicher License-/Distribution-Flow (Referenz)
 
 Siehe [LICENSE-FLOW.md](LICENSE-FLOW.md) für den vollständigen Fluss. Dieses
