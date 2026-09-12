@@ -40,12 +40,13 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   beide Planes live, voller MCP+Data-Plane-Flow, Container-Restart und
   Persistenzpruefung. Der lokale Windows-Testhost hat **keinen** laufenden
   Docker-Daemon; deshalb ist der GitHub-Job die autoritative Container-Abnahme.
-- Forgejo-Distribution ist jetzt als separates CI-Gate verifiziert: internes
-  Repo `rheinagent/rheinagent-file-upload`, Feature-Branch exakt auf
-  `a808e5d49623cf6f5694f63c5672ed380b0e76d4`. Der erste native Forgejo-Lauf
-  auf `6a71690` zeigte einen echten Runner-Unterschied: `check` war gruen,
-  `docker-runtime-smoke` scheiterte sofort, weil das fuer `ubuntu-latest`
-  verwendete `node:lts`-Job-Image keinen Docker-CLI enthielt.
+- Forgejo-Distribution ist jetzt als separates CI-Gate verifiziert. Das
+  interne Repo `rheinagent/rheinagent-file-upload` fuehrt denselben
+  Feature-Branch; den tatsaechlichen Remote-HEAD weiterhin zu Sitzungsbeginn
+  pruefen. Der erste native Forgejo-Lauf auf `6a71690` zeigte einen echten
+  Runner-Unterschied: `check` war gruen, `docker-runtime-smoke` scheiterte
+  sofort, weil das fuer `ubuntu-latest` verwendete `node:lts`-Job-Image keinen
+  Docker-CLI enthielt.
 - Commit `a808e5d` haertet deshalb nur den Forgejo-Pfad: moderne
   `docker-ce-cli` + Compose-Plugin aus dem offiziellen Docker-APT-Repository,
   dynamisch ermitteltes Remote-DinD-Gateway, CI-Bind auf `0.0.0.0` und ein
