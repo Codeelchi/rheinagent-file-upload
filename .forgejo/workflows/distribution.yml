@@ -1,0 +1,130 @@
+name: distribution
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - uses: https://data.forgejo.org/actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Build reviewed Windows runtime
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File packaging/distribution/build_windows_runtime.ps1 `
+            -RepoRoot "$PWD" `
+            -OutDir "$PWD\.state\distribution\windows-runtime"
+          $meta = Get-Content .state\distribution\windows-runtime\RHEINAGENT_NODE_RUNTIME.json -Raw | ConvertFrom-Json
+          if ($meta.product_slug -ne 'rheinagent-file-upload') { throw 'runtime product mismatch' }
+          if ($meta.version -ne '0.3.0') { throw 'runtime version mismatch' }
+          if ($meta.platform -ne 'windows-amd64') { throw 'runtime platform mismatch' }
+          if ($meta.files -gt 4999) { throw 'runtime exceeds Manager package entry budget' }
+          if (-not (Test-Path .state\distribution\windows-runtime\node.exe)) { throw 'bundled node.exe missing' }
+          & .\.state\distribution\windows-runtime\node.exe -e "import('./.state/distribution/windows-runtime/dist/src/lib/processors.js').then(m=>{if(m.listProcessorIds().length!==11) process.exit(2)})"
+          if ($LASTEXITCODE -ne 0) { throw 'bundled File Upload processor registry smoke failed' }
+      - uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: file-upload-windows-runtime
+          path: .state/distribution/windows-runtime
+          if-no-files-found: error
+          include-hidden-files: true
+
+  package-v2-smoke:
+    needs: windows-runtime
+    runs-on: python313
+    timeout-minutes: 15
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Bootstrap Python 3.13 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip
+          python3 -c "import sys; assert sys.version_info[:2] == (3, 13), sys.version"
+          ln -sf "$(command -v python3)" /usr/local/bin/python
+      - run: python -m pip install --break-system-packages -r packaging/distribution/requirements.txt
+      - uses: https://data.forgejo.org/forgejo/download-artifact@v4
+        with:
+          name: file-upload-windows-runtime
+          path: .state/distribution/windows-runtime
+      - name: Create ephemeral CI signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .state/distribution/ci-key
+          python - <<'PY'
+          from pathlib import Path
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          root = Path('.state/distribution/ci-key')
+          key = Ed25519PrivateKey.generate()
+          (root / 'key.pem').write_bytes(key.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.PKCS8,
+              serialization.NoEncryption(),
+          ))
+          (root / 'key.pub.pem').write_bytes(key.public_key().public_bytes(
+              serialization.Encoding.PEM,
+              serialization.PublicFormat.SubjectPublicKeyInfo,
+          ))
+          PY
+      - name: Build and verify signed Package v2 smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python packaging/distribution/build_release.py \
+            --repo-root . \
+            --runtime-dir .state/distribution/windows-runtime \
+            --out-dir .state/distribution/release-smoke \
+            --channel candidate \
+            --min-manager-version 0.4.0-rc.7 \
+            --signing-key .state/distribution/ci-key/key.pem
+          python packaging/distribution/verify_release.py \
+            --release-dir .state/distribution/release-smoke \
+            --public-key .state/distribution/ci-key/key.pub.pem
+      - name: Package safety assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, zipfile
+          from pathlib import Path
+          release = Path('.state/distribution/release-smoke')
+          manifest = json.loads((release / 'manifest.json').read_text())
+          package = release / manifest['artifact']['name']
+          if package.stat().st_size > 64 * 1024 * 1024:
+              raise SystemExit(f'package exceeds Update Feed asset limit: {package.stat().st_size}')
+          if manifest['product_slug'] != 'rheinagent-file-upload':
+              raise SystemExit('product mismatch')
+          if manifest['version'] != '0.3.0' or manifest['channel'] != 'candidate':
+              raise SystemExit('candidate identity mismatch')
+          if manifest['min_manager_version'] != '0.4.0-rc.7':
+              raise SystemExit('minimum Manager version mismatch')
+          prod_pub = Path('packaging/distribution/keys/update-signing-ed25519.pub.pem')
+          expected = '1c4f5d5ad3313381b7d96d8782c853d950a87ad2f6a285b2c060d325d77e4a15'
+          if hashlib.sha256(prod_pub.read_bytes()).hexdigest() != expected:
+              raise SystemExit('production public-key trust anchor changed unexpectedly')
+          with zipfile.ZipFile(package) as archive:
+              names = archive.namelist()
+          forbidden = [name for name in names if name.endswith('.pem') or '/keys/' in name or '.ci-key' in name]
+          if forbidden:
+              raise SystemExit(f'forbidden signing material in package: {forbidden}')
+          PY
+      - uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: file-upload-package-v2-smoke
+          path: .state/distribution/release-smoke
+          if-no-files-found: error

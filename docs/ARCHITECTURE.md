@@ -33,7 +33,7 @@ Fehlfunktion.
 │  Control Plane           │       │  Data Plane               │
 │  server.ts (Port 3901)   │       │  dataplane.ts (Port 3902) │
 │  MCP JSON-RPC (/mcp)     │       │  rohe Bytes (PUT/GET)      │
-│  16 öffentliche Tools    │       │  keine MCP-Tools, kein     │
+│  18 öffentliche Tools    │       │  keine MCP-Tools, kein     │
 │  Business-/Sicherheits-  │       │  Audit, keine Business-    │
 │  logik, Audit-Aufrufe    │       │  logik — Staging-Write,    │
 │                           │       │  Download-Read, /healthz  │
@@ -42,17 +42,21 @@ Fehlfunktion.
              └──────────────┬────────────────────┘
                              ▼
                     data/ (gemeinsames Dateisystem)
-                    staging/  files/  results/  meta/*.json
+                    staging/  files/  results/  meta/state.sqlite
 ```
 
-Beide Prozesse sind **getrennt**, weil große Binärdaten nie durch MCP-JSON
+Beide Prozesse sind **getrennt**, weil grosse Binaerdaten nie durch MCP-JSON
 laufen sollen: der Control-Plane-Prozess kennt nur `upload_id`/`file_id`/
-`job_id`, nie rohe Bytes im Request/Response-Pfad (außer dem Sonderfall
+`job_id`, nie rohe Bytes im Request/Response-Pfad (ausser dem Sonderfall
 kleiner Text-Inhalte in `rheinagent_file_get`, siehe unten). Beide Prozesse
-teilen sich ausschließlich das Dateisystem unter `data/`, nicht den
-Prozessspeicher — jede Metadaten-Tabelle liest/schreibt bei jedem Zugriff
-frisch von Platte (`src/lib/jsonIndex.ts`), damit keiner der beiden Prozesse
-mit einem veralteten In-Memory-Stand des anderen arbeitet.
+teilen sich ausschliesslich einen gemeinsamen Data-Root, nicht den
+Prozessspeicher. Standard ist `<product-root>/data`;
+`RHEINAGENT_FILE_UPLOAD_DATA_DIR` kann fuer Service-/Container-Installationen
+einen expliziten Pfad setzen. `src/lib/runtimePaths.ts` ermittelt den
+Produktroot unabhaengig davon, ob Module aus `src/lib` oder nach `tsc` aus
+`dist/src/lib` laufen. Metadaten liegen in `data/meta/state.sqlite` (WAL-Modus,
+`src/lib/sqliteIndex.ts`). Jeder Tabellenzugriff geht direkt gegen diese Datei,
+ohne Record-Cache. Siehe [STATE-MIGRATION.md](STATE-MIGRATION.md).
 
 Beide Prozesse binden standardmäßig ausschließlich an `127.0.0.1`
 (`RHEINAGENT_FILE_UPLOAD_BIND_HOST`, Default `127.0.0.1`) — da diese Version
@@ -60,6 +64,16 @@ keinerlei TLS/Auth auf HTTP-Ebene hat (siehe [SECURITY.md](SECURITY.md)),
 würde ein Default von `0.0.0.0` das Produkt sonst ungeschützt im
 LAN/Tailnet erreichbar machen. Ein Betrieb hinter einem Reverse Proxy oder
 mit anderer Zugriffskontrolle kann den Host explizit überschreiben.
+
+## Graceful Shutdown und SQLite-Lifecycle
+
+Beide Prozesse behandeln `SIGINT` und `SIGTERM` als kontrollierten Shutdown:
+zuerst nimmt der jeweilige HTTP-Server keine neuen Verbindungen mehr an, danach
+werden die pro Prozess gecachten SQLite-Handles geschlossen. Nach 10 Sekunden
+greift ein Fail-safe-Exit. Das ist insbesondere unter Windows relevant, weil
+ein offener SQLite-Handle die Datei fuer Upgrade/Rollback oder Test-Cleanup
+blockiert. Der CI-Runtime-Smoke restartet beide Container und prueft danach die
+Persistenz von SQLite, Datei-Bytes, Job und Ergebnis.
 
 ## Identität/Autorisierung
 
@@ -107,8 +121,8 @@ Für alles, was nicht als kleine Textdatei inline über `rheinagent_file_get`
 geht (große Dateien, PDFs, Bilder), gilt derselbe Trennungsgrundsatz wie
 beim Upload: Bytes laufen nie durch MCP-JSON. `rheinagent_file_download_prepare`
 prüft, dass die Datei existiert und nicht `pendingDelete` ist, und legt ein
-befristetes (15 min), wiederverwendbares `download_token` an (`data/meta/downloads.json`,
-Muster analog zu `PendingUpload`). Die Data Plane bedient `GET
+befristetes (15 min), wiederverwendbares `download_token` in der `downloads`-
+Tabelle von `data/meta/state.sqlite` an (Muster analog zu `PendingUpload`). Die Data Plane bedient `GET
 /download/:downloadToken`, löst das Token gegen `fileId` auf, liest die
 Datei ausschließlich über `filePath()` (also nur opake, bereits validierte
 Pfade unter `data/files/`) und streamt sie mit `Content-Disposition:
@@ -162,15 +176,30 @@ einer klaren Fehlermeldung abgelehnt wird, statt erst nach einem echten
 Laufzeit-Check pro Processor-Funktion bleibt zusätzlich als Verteidigung
 in der Tiefe bestehen.
 
-Aktuell registriert:
+Aktuell registriert (volle Optionsreferenz: [PROCESSORS.md](PROCESSORS.md)):
 
 | Processor | `mime_category` | Ergebnis |
 |---|---|---|
 | `text_stats` | text | `line_count`, `word_count`, `char_count` |
 | `text_uppercase` | text | `transformed_text` (kompletter Inhalt, Großbuchstaben) |
+| `text_extract` | text | `text` (bis 64 KiB), `char_count`, `word_count`, `line_count`, `truncated` |
+| `markdown_structure` | text (nur `.md`) | `headings`, `links_count`, `code_block_count` |
+| `csv_inspect` | text (nur `.csv`) | `delimiter`, `row_count`, `column_count`, `headers`, `sample_rows`, `truncated` |
+| `json_inspect` | text (nur `.json`) | `root_type`, `array_length`, `keys`, `keys_truncated`, `sample`, `sample_truncated` |
 | `image_metadata` | image | `format` (`png`/`jpeg`), `width`, `height`, `size_bytes` — Dimensionen per Hand aus PNG-IHDR bzw. JPEG-SOF-Markern geparst, **keine** Bildbibliothek (kein `sharp`/`jimp`: nativ bzw. für reines Header-Lesen unnötig) |
 | `pdf_metadata` | pdf | `page_count`, `pdf_format_version`, `title`, `author` (letztere `null`, falls nicht gesetzt) |
 | `pdf_extract_text` | pdf | `extracted_text` (auf 64 KiB gekappt, wie `INLINE_CONTENT_MAX_BYTES` an anderer Stelle — Ergebnis fließt über `result_get` durch MCP-JSON zurück), `page_count`, `page` (`null` = ganzes Dokument, sonst 1-indexierte Seitenzahl), `truncated` |
+| `docx_extract_text` | office (nur `.docx`) | `text` (bis 64 KiB), `paragraph_count`, `table_count`, `truncated` |
+| `xlsx_inspect` | office (nur `.xlsx`) | `sheet_names`, `sheet`, `row_count`, `column_count`, `headers`, `sample_rows`, `shared_strings_truncated`, `truncated` |
+
+`text` deckt vier Extensions ab (`.txt`/`.md`/`.csv`/`.json`) — `csv_inspect`,
+`json_inspect` und `markdown_structure` prüfen deshalb zusätzlich zur groben
+`mime_category` noch die konkrete Dateiendung selbst (`requireExtension()`),
+ebenso `docx_extract_text`/`xlsx_inspect` innerhalb von `office`
+(`.docx`/`.xlsx`). `docx`/`xlsx` sind intern ZIP-Container — siehe
+[SECURITY.md](SECURITY.md) für den bounded-Unzip-Ansatz
+(`src/lib/officeZip.ts`/`src/lib/officeXml.ts`), der das strukturell vom
+generellen Archive-Bomb-Ausschluss trennt.
 
 `pdf_metadata`/`pdf_extract_text` nutzen `pdfjs-dist` (Mozillas eigener
 PDF.js-Kern) — bewusst **nicht** das populärere `pdf-parse`, das
@@ -251,6 +280,8 @@ erst über einen `rate limit exceeded`-Fehler zu lernen.
 | `rheinagent_file_get` | `file_id` | `FileViewResultSchema` (+`content` bei kleinen Textdateien) | readOnly, idempotent | read |
 | `rheinagent_file_rename` | `file_id`, `new_filename` | `FileRecordSchema` | idempotent | write |
 | `rheinagent_file_verify` | `file_id` | `FileVerifyResultSchema` | readOnly, idempotent | read |
+| `rheinagent_file_duplicate_check` | genau eins von `file_id`/`sha256` | `DuplicateCheckResultSchema` | readOnly, idempotent | read |
+| `rheinagent_file_knowledge_handoff_prepare` | `file_id`, `extraction_job_id?` | `KnowledgeHandoffResultSchema` | readOnly, idempotent | read |
 | `rheinagent_file_download_prepare` | `file_id` | `DownloadPrepareResultSchema` | — | write |
 | `rheinagent_file_process_prepare` | `file_id`, `processor_id`, `options?` | `JobRecordSchema` | — | write |
 | `rheinagent_file_process_apply` | `job_id` | `JobResultEnvelopeSchema` | — | critical |

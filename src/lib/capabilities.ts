@@ -1,13 +1,32 @@
 import { MAX_UPLOAD_BYTES } from "./security.js";
 import { listProcessorsWithCategories } from "./processors.js";
-import { loadAuditConfig } from "./audit.js";
+import { AUDIT_PROFILE_ID, loadAuditConfig } from "./audit.js";
 import { WINDOW_MS, LIMITS } from "./rateLimit.js";
+import { readProductVersion } from "./runtimePaths.js";
 
 export const PRODUCT_SLUG = "rheinagent-file-upload";
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 export const PACKAGE_PROFILE = "rheinagent-file-upload@1";
-export const AUDIT_PROFILE = "rheinagent-file-upload@1";
+export const AUDIT_PROFILE = AUDIT_PROFILE_ID;
 export const HEALTH_PROFILE = "rheinagent-file-upload-v1";
+
+/**
+ * `package.json#version` read at startup rather than hardcoded a second
+ * time here (or a third time, in server.ts's McpServer identity) — one
+ * canonical source, per docs/VERSIONING.md, instead of yet another copy
+ * that can silently drift out of sync with it.
+ */
+export const PRODUCT_VERSION: string = readProductVersion();
+
+/**
+ * `FileRecord`/`JobRecord`/`PendingUpload`/`DeleteTicket`/`DownloadTicket`
+ * (src/lib/store.ts) have no per-record version field of their own yet
+ * (see docs/VERSIONING.md "Schema-Kompatibilität") — this single constant
+ * stands in for "the shape of these records as a whole" until/unless a
+ * breaking change needs real per-table migration, at which point this
+ * bumps and docs/VERSIONING.md gets a migration note.
+ */
+export const STATE_SCHEMA_VERSION = 1;
 
 /**
  * Canonical workflow crib sheet — the single source of truth for both the
@@ -22,9 +41,10 @@ export const USAGE_STEPS: readonly string[] = [
   "All ids (file_id, job_id, upload_id, delete_token, download_token) are opaque strings returned by this server — never construct or guess one.",
   "Discover: call rheinagent_file_capabilities_get once for limits and valid processor_id values; call rheinagent_file_health_get before heavy work if a previous call failed unexpectedly.",
   "Upload: rheinagent_file_upload_prepare -> PUT the raw bytes to the returned upload_url (not through MCP JSON) -> rheinagent_file_upload_finalize.",
-  "Inspect: rheinagent_file_list (filterable by mime_category and/or filename_contains) / rheinagent_file_get. Small text files come back inline from rheinagent_file_get; anything else needs rheinagent_file_download_prepare -> GET the returned download_url. rheinagent_file_rename changes only the display filename, never mime_category or bytes. rheinagent_file_verify re-checks a file's SHA-256 against what was recorded at upload time (matches: false means the bytes on disk changed since acceptance).",
+  "Inspect: rheinagent_file_list (filterable by mime_category and/or filename_contains) / rheinagent_file_get. Small text files come back inline from rheinagent_file_get; anything else needs rheinagent_file_download_prepare -> GET the returned download_url. rheinagent_file_rename changes only the display filename, never mime_category or bytes. rheinagent_file_verify re-checks a file's SHA-256 against what was recorded at upload time (matches: false means the bytes on disk changed since acceptance). rheinagent_file_duplicate_check finds every other accepted file with identical content by SHA-256 (pass file_id, or sha256 directly to check before even uploading).",
   "Process: rheinagent_file_process_prepare (pick a processor_id from capabilities.processors whose supported_mime_categories includes the file's mime_category) -> rheinagent_file_process_apply -> rheinagent_file_job_get / rheinagent_file_result_get. Use rheinagent_file_job_list to find jobs again if a job_id was lost.",
   "Delete: rheinagent_file_delete_prepare -> rheinagent_file_delete_apply. The apply step asks for an explicit confirmation round-trip (elicitation) before it actually deletes anything.",
+  "Knowledge handoff (optional): rheinagent_file_knowledge_handoff_prepare builds a proposal shaped for rheinagent-knowledge-mcp's own knowledge_contribution_create tool from a file plus a completed extraction job. It never calls Knowledge itself and never invents department/scope (both always come back null, requiring your own input) — you submit the proposal to Knowledge yourself with your own identity.",
   "Rate limits apply per tool (see capabilities.limits.rate_limit_window_ms / rate_limits_per_window) — an isError result mentioning 'rate limit exceeded' means back off and retry after the window, not a permanent failure.",
 ];
 
@@ -32,6 +52,8 @@ export function getCapabilities() {
   const audit = loadAuditConfig();
   return {
     product_slug: PRODUCT_SLUG,
+    product_version: PRODUCT_VERSION,
+    state_schema_version: STATE_SCHEMA_VERSION,
     mcp_protocol_version: MCP_PROTOCOL_VERSION,
     package_profile: PACKAGE_PROFILE,
     audit_profile: AUDIT_PROFILE,
@@ -39,7 +61,7 @@ export function getCapabilities() {
     audit_mode: audit.mode,
     limits: {
       max_upload_bytes: MAX_UPLOAD_BYTES,
-      allowed_mime_categories: ["text", "pdf", "image"],
+      allowed_mime_categories: ["text", "pdf", "image", "office"],
       rate_limit_window_ms: WINDOW_MS,
       rate_limits_per_window: { ...LIMITS },
     },

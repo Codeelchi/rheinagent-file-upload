@@ -1,9 +1,13 @@
 # RheinAgent File Upload MCP
 
-On-prem/lokal betreibbarer MCP-Server für sicheren File Upload, Dateiverwaltung
-und kontrollierte serverseitige Dateiverarbeitung.
+On-prem/lokal betreibbarer MCP-Server für sicheren File Upload,
+Dateiverwaltung, kontrollierte serverseitige Dateiverarbeitung/-analyse
+und einen optionalen, nicht-autoritativen Handoff an
+`rheinagent-knowledge-mcp` — die gemeinsame RheinAgent-File-Intake-Schicht,
+nicht Datei-Ablage.
 
 - **Product slug:** `rheinagent-file-upload`
+- **Version:** `0.3.0` (siehe [docs/VERSIONING.md](docs/VERSIONING.md))
 - **MCP-Protokoll:** `2026-07-28`
 - **Package-v2-Profil:** `rheinagent-file-upload@1`
 - **Audit-Profil:** `rheinagent-file-upload@1`
@@ -12,16 +16,29 @@ und kontrollierte serverseitige Dateiverarbeitung.
 ## Architekturprinzipien
 
 - Kein beliebiges Shell-/Filesystem-/Executor-Tool — nur fest registrierte,
-  serverseitige Processor (`src/lib/processors.ts`): `text_stats`/
-  `text_uppercase` (Text), `image_metadata` (PNG/JPEG, ohne Bildbibliothek
-  — Dimensionen selbst geparst), `pdf_metadata`/`pdf_extract_text` (PDF,
-  via `pdfjs-dist`, bewusst ohne dessen native `canvas`-Abhängigkeit)
+  serverseitige Processor (`src/lib/processors.ts`, 11 Stück,
+  volle Referenz: [docs/PROCESSORS.md](docs/PROCESSORS.md)): Text/Markdown/
+  CSV/JSON (hand-geschriebene Parser, keine Bibliothek), PDF (`pdfjs-dist`),
+  PNG/JPEG (hand-geparste Header), DOCX/XLSX (hand-geschriebener, bounded
+  ZIP-Reader + enges OOXML-Tag-Scanning — kein allgemeiner Unzip/XML-Parser,
+  siehe [docs/SECURITY.md](docs/SECURITY.md))
 - MCP-Tools arbeiten ausschließlich mit opaken `file_id`/`job_id`/`upload_id`
   (nie mit Dateinamen oder Pfaden als Identifikator)
 - Große Binärdaten laufen nie als Base64 durch MCP-JSON — Upload/Finalize
   sind getrennt vom eigentlichen Byte-Transport (**Data Plane**, `dataplane.ts`)
 - Staging vor finaler Übernahme, Validierung von Größe/Magic-Bytes/Extension/Hash
+- Metadaten-Persistenz in SQLite (`node:sqlite`, WAL, keine zusätzliche
+  Abhängigkeit) statt whole-file-JSON — siehe
+  [docs/STATE-MIGRATION.md](docs/STATE-MIGRATION.md)
 - Kritische Mutationen folgen Read/Prepare/Apply/Verify; siehe [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Chunking für unpaginierten Fließtext (`options.offset`/`options.limit`),
+  seitenbasiert für PDF (`options.page`), zeilenbasiert für XLSX — kein
+  Tool-Response muss ein ganzes Dokument auf einmal tragen
+- Deduplikation (`rheinagent_file_duplicate_check`) und ein optionaler,
+  nicht-autoritativer Knowledge-Handoff (`rheinagent_file_knowledge_handoff_prepare`,
+  siehe [docs/KNOWLEDGE-INTEGRATION.md](docs/KNOWLEDGE-INTEGRATION.md)) —
+  Letzterer ruft `rheinagent-knowledge-mcp` **nie selbst auf** und erfindet
+  nie `department`/`scope`
 - Lizenzierung und Audit sind bewusst **nicht** selbst implementiert, sondern
   binden an die zentralen RheinAgent-Plattformdienste an — siehe
   [docs/LICENSE-FLOW.md](docs/LICENSE-FLOW.md) und [docs/AUDIT.md](docs/AUDIT.md)
@@ -41,38 +58,55 @@ npm run serve             # Control Plane (MCP), Port 3901
 npm run serve:dataplane   # Data Plane (Upload-Bytes), Port 3902
 ```
 
-Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Oder per Docker (`Dockerfile` + `docker-compose.yml`, siehe
+[docs/INSTALLATION.md](docs/INSTALLATION.md)):
 
-## Öffentliche MCP-Tools
+```bash
+docker compose up --build
+```
+
+Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Persistente Daten liegen standardm??ig unter `<product-root>/data`; f?r Service-/
+Container-Installationen kann `RHEINAGENT_FILE_UPLOAD_DATA_DIR` gesetzt werden.
+Der CI-Runtime-Smoke startet beide Container, f?hrt einen echten MCP+Data-Plane-
+Flow und verifiziert die Persistenz nach Container-Restart.
+
+## Öffentliche MCP-Tools (18)
 
 | Tool | Zweck |
 |---|---|
 | `rheinagent_file_capabilities_get` | Protokollversion, Profile, Limits, Processor-Liste |
-| `rheinagent_file_health_get` | Health/Doctor: Plane-Erreichbarkeit, Verzeichnis-Schreibbarkeit, Audit-Status |
+| `rheinagent_file_health_get` | Health/Doctor: Plane-Erreichbarkeit, Verzeichnis-Schreibbarkeit, Storage-/Job-Stats, Audit-Status |
 | `rheinagent_file_upload_prepare` | Upload ankündigen, opake `upload_id` + Data-Plane-URL erhalten |
 | `rheinagent_file_upload_finalize` | Staged Bytes validieren und final übernehmen |
 | `rheinagent_file_list` | Akzeptierte Dateien auflisten (Metadaten), filterbar nach `mime_category`/`filename_contains` |
 | `rheinagent_file_get` | Metadaten (und kleine Text-Inhalte) abrufen |
 | `rheinagent_file_rename` | Anzeigenamen ändern (nie Bytes/`mime_category`) |
 | `rheinagent_file_verify` | SHA-256 gegen die beim Upload erfasste Prüfsumme neu berechnen (Integritätscheck) |
+| `rheinagent_file_duplicate_check` | Andere akzeptierte Dateien mit identischem SHA-256 finden (per `file_id` oder direkt per `sha256`) |
+| `rheinagent_file_knowledge_handoff_prepare` | Nicht-autoritativen Contribution-Vorschlag für Knowledge bauen (kein Aufruf, keine erfundenen `department`/`scope`) |
 | `rheinagent_file_download_prepare` | `download_token` + Data-Plane-URL für große/binäre Dateien erhalten |
-| `rheinagent_file_process_prepare` | Verarbeitungsjob für einen registrierten Processor anlegen |
+| `rheinagent_file_process_prepare` | Verarbeitungsjob für einen registrierten Processor anlegen, optional mit `options` |
 | `rheinagent_file_process_apply` | Job ausführen, Ergebnis atomar speichern |
 | `rheinagent_file_job_get` | Job-Status abrufen |
 | `rheinagent_file_job_list` | Jobs auflisten, filterbar nach `file_id`/`state`/`processor_id` |
 | `rheinagent_file_result_get` | Job-Ergebnis abrufen |
 | `rheinagent_file_delete_prepare` | Löschung vorbereiten (`delete_token`) |
-| `rheinagent_file_delete_apply` | Löschung mit `delete_token` final ausführen |
+| `rheinagent_file_delete_apply` | Löschung mit `delete_token` final ausführen (kaskadiert auf Jobs/Ergebnisse) |
 
 Vollständige Nutzlasten/Felder: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Vollständige Processor-/Options-Referenz: [docs/PROCESSORS.md](docs/PROCESSORS.md).
 
 ## Dokumentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Control-/Data-Plane-Trennung, Tool-Verträge, Staging/Quarantine
 - [docs/SECURITY.md](docs/SECURITY.md) — Validierung, Path-Traversal/Symlink/Archive-Bomb-Schutz, Threat-Model
+- [docs/PROCESSORS.md](docs/PROCESSORS.md) — Alle Processor, Optionen, Limits, Chunking-Vertrag
+- [docs/KNOWLEDGE-INTEGRATION.md](docs/KNOWLEDGE-INTEGRATION.md) — Knowledge-Handoff-Contract
+- [docs/STATE-MIGRATION.md](docs/STATE-MIGRATION.md) — JSON-→-SQLite-Migration
 - [docs/AUDIT.md](docs/AUDIT.md) — Anbindung an den zentralen RheinAgent Audit Hub
 - [docs/LICENSE-FLOW.md](docs/LICENSE-FLOW.md) — Lizenz-/Aktivierungsfluss über Manager/License Service
-- [docs/INSTALLATION.md](docs/INSTALLATION.md) — Betrieb, Umgebungsvariablen, Audit-Opt-in
+- [docs/INSTALLATION.md](docs/INSTALLATION.md) — Betrieb, Docker, Umgebungsvariablen, Audit-Opt-in
 - [docs/VERSIONING.md](docs/VERSIONING.md) — Versionsquelle, Release-Kanäle, Package-v2
 - [docs/HANDOFF.md](docs/HANDOFF.md) — Offene Integrationsarbeit in zentralen RheinAgent-Repos
 - [BUILDLOG.md](BUILDLOG.md) — Chronologisches Änderungsprotokoll
@@ -80,5 +114,5 @@ Vollständige Nutzlasten/Felder: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Nicht Teil dieses Repos
 
 Dieses Repo ändert **keine** zentralen RheinAgent-Repos (Manager, License
-Service, Update Feed, Audit). Erforderliche Integrationsschritte dort sind
-in [docs/HANDOFF.md](docs/HANDOFF.md) dokumentiert, nicht umgesetzt.
+Service, Update Feed, Audit, Knowledge). Erforderliche Integrationsschritte
+dort sind in [docs/HANDOFF.md](docs/HANDOFF.md) dokumentiert, nicht umgesetzt.

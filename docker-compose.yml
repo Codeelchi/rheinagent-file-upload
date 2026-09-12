@@ -1,0 +1,70 @@
+# Two services from one image (see Dockerfile) — mirrors the two-process,
+# separate-OS-process architecture in docs/ARCHITECTURE.md 1:1 instead of
+# running both under a supervisor inside one container: that would need an
+# extra supervisor process and its own attack surface for no real benefit
+# here (Docker/Compose is already the process manager), and would obscure
+# the exact same control-plane/data-plane separation the Manager-owned
+# systemd deployment (docs/VERSIONING.md) already uses per process.
+#
+# Uses `network_mode: host` (Linux-only — matches this product's primary
+# on-prem-Linux target, see docs/VERSIONING.md's service table) rather than
+# Compose's default bridge network + published ports. The control plane
+# hands upload_url/download_url straight through to the MCP client using
+# RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST (default "localhost", see
+# server.ts) — under bridge networking, "localhost" inside the file-control
+# container would resolve to itself, not to the file-data container, and a
+# client-facing URL of "http://file-data:3902/..." would only be reachable
+# from inside the same Docker network, not from an external MCP client on
+# the host. Host networking keeps "localhost" meaning what it already means
+# everywhere else in this product's docs, with no extra hostname plumbing.
+services:
+  file-control:
+    build: .
+    command: ["node", "dist/server.js"]
+    network_mode: host
+    environment:
+      RHEINAGENT_FILE_UPLOAD_BIND_HOST: "127.0.0.1"
+      RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST: "127.0.0.1"
+      RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT: "3902"
+      RHEINAGENT_FILE_UPLOAD_DATA_DIR: "/app/data"
+    volumes:
+      - rheinagent-file-upload-data:/app/data
+    depends_on:
+      - file-data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3901/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  file-data:
+    build: .
+    command: ["node", "dist/dataplane.js"]
+    network_mode: host
+    environment:
+      RHEINAGENT_FILE_UPLOAD_BIND_HOST: "127.0.0.1"
+      RHEINAGENT_FILE_UPLOAD_DATA_DIR: "/app/data"
+    volumes:
+      - rheinagent-file-upload-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3902/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  rheinagent-file-upload-data:

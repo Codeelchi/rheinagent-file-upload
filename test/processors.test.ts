@@ -10,12 +10,25 @@ import {
   listProcessorIds,
   listProcessorsWithCategories,
 } from "../src/lib/processors.js";
+import { buildSampleDocx, buildSampleXlsx, buildZip } from "./testZip.js";
 
 // --- registry / mime-category declarations ---
 
 test("listProcessorIds includes every registered processor", () => {
   const ids = listProcessorIds();
-  for (const id of ["text_stats", "text_uppercase", "image_metadata", "pdf_metadata", "pdf_extract_text"]) {
+  for (const id of [
+    "text_stats",
+    "text_uppercase",
+    "text_extract",
+    "markdown_structure",
+    "csv_inspect",
+    "json_inspect",
+    "docx_extract_text",
+    "xlsx_inspect",
+    "image_metadata",
+    "pdf_metadata",
+    "pdf_extract_text",
+  ]) {
     assert.ok(ids.includes(id), `expected ${id} to be registered`);
   }
 });
@@ -213,5 +226,292 @@ test("pdf_extract_text/pdf_metadata reject a non-pdf mimeCategory", async () => 
     const meta = getProcessor("pdf_metadata")!;
     await assert.rejects(() => extract({ filePath, filename: "sample.pdf", mimeCategory: "text" }), /only supports PDF/);
     await assert.rejects(() => meta({ filePath, filename: "sample.pdf", mimeCategory: "text" }), /only supports PDF/);
+  });
+});
+
+// --- text_extract / markdown_structure ---
+
+test("text_extract returns bounded text plus char/word/line counts", async () => {
+  await withTempFile(Buffer.from("hello world\nsecond line\n"), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    const result = await run({ filePath, filename: "sample.txt", mimeCategory: "text" });
+    assert.equal(result.text, "hello world\nsecond line\n");
+    assert.equal(result.word_count, 4);
+    assert.equal(result.line_count, 3);
+    assert.equal(result.truncated, false);
+  });
+});
+
+test("text_extract truncates content past its char limit", async () => {
+  const big = "x".repeat(70_000);
+  await withTempFile(Buffer.from(big), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    const result = await run({ filePath, filename: "sample.txt", mimeCategory: "text" });
+    assert.equal(result.truncated, true);
+    assert.equal((result.text as string).length, 64 * 1024);
+    assert.equal(result.next_offset, 64 * 1024);
+    assert.equal(result.total_chars, 70_000);
+  });
+});
+
+test("text_extract walks a full document chunk by chunk via options.offset/next_offset", async () => {
+  const content = "0123456789".repeat(10); // 100 chars
+  await withTempFile(Buffer.from(content), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    let offset = 0;
+    let reassembled = "";
+    let iterations = 0;
+    while (true) {
+      iterations++;
+      const result = await run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { offset, limit: 30 } });
+      reassembled += result.text as string;
+      if (result.next_offset === null) break;
+      offset = result.next_offset as number;
+      assert.ok(iterations < 20, "must terminate — runaway loop indicates a chunking bug");
+    }
+    assert.equal(reassembled, content);
+    assert.equal(iterations, 4); // 100 chars / 30-char chunks -> 4 chunks (30+30+30+10)
+  });
+});
+
+test("text_extract rejects an out-of-range options.offset/options.limit", async () => {
+  await withTempFile(Buffer.from("hello"), ".txt", async (filePath) => {
+    const run = getProcessor("text_extract")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { offset: -1 } }),
+      /non-negative integer/,
+    );
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { limit: 0 } }),
+      /between 1 and/,
+    );
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.txt", mimeCategory: "text", options: { limit: 999_999 } }),
+      /between 1 and/,
+    );
+  });
+});
+
+test("markdown_structure extracts headings, links, and code blocks", async () => {
+  const md = "# Title\n\nSome [link](http://x) text.\n\n```js\ncode\n```\n\n## Sub\n";
+  await withTempFile(Buffer.from(md), ".md", async (filePath) => {
+    const run = getProcessor("markdown_structure")!;
+    const result = await run({ filePath, filename: "sample.md", mimeCategory: "text" });
+    assert.deepEqual(result.headings, [
+      { level: 1, text: "Title" },
+      { level: 2, text: "Sub" },
+    ]);
+    assert.equal(result.links_count, 1);
+    assert.equal(result.code_block_count, 1);
+  });
+});
+
+test("markdown_structure rejects a non-.md filename even under the text category", async () => {
+  await withTempFile(Buffer.from("# Title"), ".txt", async (filePath) => {
+    const run = getProcessor("markdown_structure")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.txt", mimeCategory: "text" }), /requires a "\.md" file/);
+  });
+});
+
+// --- csv_inspect ---
+
+test("csv_inspect parses headers/rows, auto-detects the comma delimiter", async () => {
+  const csv = 'name,age,city\nAlice,30,Berlin\nBob,25,"Hamburg, DE"\n';
+  await withTempFile(Buffer.from(csv), ".csv", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    const result = await run({ filePath, filename: "sample.csv", mimeCategory: "text" });
+    assert.equal(result.delimiter, ",");
+    assert.equal(result.row_count, 3);
+    assert.deepEqual(result.headers, ["name", "age", "city"]);
+    assert.deepEqual(result.sample_rows, [
+      ["Alice", "30", "Berlin"],
+      ["Bob", "25", "Hamburg, DE"],
+    ]);
+    assert.equal(result.truncated, false);
+  });
+});
+
+test("csv_inspect auto-detects a semicolon delimiter", async () => {
+  const csv = "a;b;c\n1;2;3\n";
+  await withTempFile(Buffer.from(csv), ".csv", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    const result = await run({ filePath, filename: "sample.csv", mimeCategory: "text" });
+    assert.equal(result.delimiter, ";");
+    assert.deepEqual(result.headers, ["a", "b", "c"]);
+  });
+});
+
+test("csv_inspect honors an explicit options.delimiter override", async () => {
+  const csv = "a\tb\tc\n1\t2\t3\n";
+  await withTempFile(Buffer.from(csv), ".csv", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    const result = await run({ filePath, filename: "sample.csv", mimeCategory: "text", options: { delimiter: "\t" } });
+    assert.equal(result.delimiter, "\t");
+    assert.deepEqual(result.headers, ["a", "b", "c"]);
+  });
+});
+
+test("csv_inspect rejects a malformed options.delimiter", async () => {
+  await withTempFile(Buffer.from("a,b\n1,2\n"), ".csv", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.csv", mimeCategory: "text", options: { delimiter: "not-one-char" } }),
+      /single character/,
+    );
+  });
+});
+
+test("csv_inspect caps scanned rows at the hard limit and reports truncated", async () => {
+  const rows = Array.from({ length: 6000 }, (_, i) => `${i},x`).join("\n");
+  await withTempFile(Buffer.from(`id,val\n${rows}\n`), ".csv", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    const result = await run({ filePath, filename: "sample.csv", mimeCategory: "text" });
+    assert.equal(result.truncated, true);
+    assert.equal(result.row_count, 5000);
+  });
+});
+
+test("csv_inspect rejects a non-.csv filename even under the text category", async () => {
+  await withTempFile(Buffer.from("a,b\n1,2\n"), ".txt", async (filePath) => {
+    const run = getProcessor("csv_inspect")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.txt", mimeCategory: "text" }), /requires a "\.csv" file/);
+  });
+});
+
+// --- json_inspect ---
+
+test("json_inspect reports root_type/keys for an object", async () => {
+  const json = JSON.stringify({ a: 1, b: [1, 2, 3], c: { d: "e" } });
+  await withTempFile(Buffer.from(json), ".json", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    const result = await run({ filePath, filename: "sample.json", mimeCategory: "text" });
+    assert.equal(result.root_type, "object");
+    assert.deepEqual(result.keys, ["a", "b", "c"]);
+    assert.equal(result.array_length, null);
+    assert.equal(result.keys_truncated, false);
+  });
+});
+
+test("json_inspect reports array_length for an array root", async () => {
+  await withTempFile(Buffer.from(JSON.stringify([1, 2, 3, 4])), ".json", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    const result = await run({ filePath, filename: "sample.json", mimeCategory: "text" });
+    assert.equal(result.root_type, "array");
+    assert.equal(result.array_length, 4);
+  });
+});
+
+test("json_inspect caps the reported key list at the sample limit", async () => {
+  const obj: Record<string, number> = {};
+  for (let i = 0; i < 100; i++) obj[`key${i}`] = i;
+  await withTempFile(Buffer.from(JSON.stringify(obj)), ".json", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    const result = await run({ filePath, filename: "sample.json", mimeCategory: "text" });
+    assert.equal((result.keys as string[]).length, 50);
+    assert.equal(result.keys_truncated, true);
+  });
+});
+
+test("json_inspect rejects JSON nested deeper than the hard limit, without ever calling JSON.parse", async () => {
+  const deep = "[".repeat(1000);
+  await withTempFile(Buffer.from(deep), ".json", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.json", mimeCategory: "text" }), /nesting depth exceeds/);
+  });
+});
+
+test("json_inspect rejects malformed JSON", async () => {
+  await withTempFile(Buffer.from("{ not valid json"), ".json", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.json", mimeCategory: "text" }));
+  });
+});
+
+test("json_inspect rejects a non-.json filename even under the text category", async () => {
+  await withTempFile(Buffer.from("{}"), ".txt", async (filePath) => {
+    const run = getProcessor("json_inspect")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.txt", mimeCategory: "text" }), /requires a "\.json" file/);
+  });
+});
+
+// --- docx_extract_text ---
+
+test("docx_extract_text extracts text/paragraph/table counts from a real docx-shaped archive", async () => {
+  await withTempFile(buildSampleDocx(), ".docx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    const result = await run({ filePath, filename: "sample.docx", mimeCategory: "office" });
+    assert.match(result.text as string, /Hello from a test DOCX document/);
+    assert.equal(result.paragraph_count, 3);
+    assert.equal(result.table_count, 1);
+    assert.equal(result.truncated, false);
+  });
+});
+
+test("docx_extract_text rejects an archive missing word/document.xml", async () => {
+  const zip = buildZip([{ name: "[Content_Types].xml", content: Buffer.from("<Types/>") }]);
+  await withTempFile(zip, ".docx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.docx", mimeCategory: "office" }), /missing word\/document\.xml/);
+  });
+});
+
+test("docx_extract_text rejects a zip bomb entry instead of materializing it", async () => {
+  const huge = Buffer.alloc(25 * 1024 * 1024, 65); // highly compressible, exceeds the 20 MB per-entry cap
+  const zip = buildZip([{ name: "word/document.xml", content: huge }]);
+  await withTempFile(zip, ".docx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.docx", mimeCategory: "office" }));
+  });
+});
+
+test("docx_extract_text supports offset/limit chunk windowing", async () => {
+  await withTempFile(buildSampleDocx(), ".docx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    const full = await run({ filePath, filename: "sample.docx", mimeCategory: "office" });
+    const firstHalf = await run({ filePath, filename: "sample.docx", mimeCategory: "office", options: { offset: 0, limit: 10 } });
+    assert.equal(firstHalf.text, (full.text as string).slice(0, 10));
+    assert.equal(firstHalf.truncated, true);
+    assert.equal(firstHalf.next_offset, 10);
+  });
+});
+
+test("docx_extract_text rejects a non-.docx filename even under the office category", async () => {
+  await withTempFile(buildSampleDocx(), ".xlsx", async (filePath) => {
+    const run = getProcessor("docx_extract_text")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.xlsx", mimeCategory: "office" }), /requires a "\.docx" file/);
+  });
+});
+
+// --- xlsx_inspect ---
+
+test("xlsx_inspect resolves shared-string cells into headers/sample_rows for a real xlsx-shaped archive", async () => {
+  await withTempFile(buildSampleXlsx(), ".xlsx", async (filePath) => {
+    const run = getProcessor("xlsx_inspect")!;
+    const result = await run({ filePath, filename: "sample.xlsx", mimeCategory: "office" });
+    assert.deepEqual(result.sheet_names, ["Sheet1"]);
+    assert.equal(result.sheet, "Sheet1");
+    assert.equal(result.row_count, 2);
+    assert.deepEqual(result.headers, ["Name", "Age"]);
+    assert.deepEqual(result.sample_rows, [
+      ["Name", "Age"],
+      ["Alice", "30"],
+    ]);
+  });
+});
+
+test("xlsx_inspect rejects an unknown options.sheet, listing the real sheet names", async () => {
+  await withTempFile(buildSampleXlsx(), ".xlsx", async (filePath) => {
+    const run = getProcessor("xlsx_inspect")!;
+    await assert.rejects(
+      () => run({ filePath, filename: "sample.xlsx", mimeCategory: "office", options: { sheet: "DoesNotExist" } }),
+      /available sheets: Sheet1/,
+    );
+  });
+});
+
+test("xlsx_inspect rejects a non-.xlsx filename even under the office category", async () => {
+  await withTempFile(buildSampleXlsx(), ".docx", async (filePath) => {
+    const run = getProcessor("xlsx_inspect")!;
+    await assert.rejects(() => run({ filePath, filename: "sample.docx", mimeCategory: "office" }), /requires a "\.xlsx" file/);
   });
 });

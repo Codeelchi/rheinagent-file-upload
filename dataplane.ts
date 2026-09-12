@@ -2,7 +2,7 @@ console.log("Starting RheinAgent File Upload data plane...");
 
 import express from "express";
 import fs from "node:fs";
-import { getPendingUpload, stagingPath, ensureDirs, getDownloadTicket, getFile, filePath } from "./src/lib/store.js";
+import { getPendingUpload, stagingPath, ensureDirs, getDownloadTicket, getFile, filePath, closeStore } from "./src/lib/store.js";
 import { MAX_UPLOAD_BYTES, type MimeCategory } from "./src/lib/security.js";
 
 /**
@@ -72,6 +72,7 @@ const CONTENT_TYPE_BY_CATEGORY: Record<MimeCategory, string> = {
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
   image: "application/octet-stream", // exact image subtype isn't tracked; stays generic/safe
+  office: "application/octet-stream", // covers both docx/xlsx; stays generic/safe
   archive: "application/octet-stream",
   unknown: "application/octet-stream",
 };
@@ -118,6 +119,22 @@ const PORT = Number(process.env.RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT ?? 3902);
 // Same loopback-only default and reasoning as the control plane — see
 // server.ts and docs/SECURITY.md.
 const BIND_HOST = process.env.RHEINAGENT_FILE_UPLOAD_BIND_HOST ?? "127.0.0.1";
-app.listen(PORT, BIND_HOST, () => {
+const httpServer = app.listen(PORT, BIND_HOST, () => {
   console.log(`Data plane listening on http://${BIND_HOST}:${PORT}`);
 });
+
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Data plane shutdown requested (${signal})`);
+  const forceTimer = setTimeout(() => process.exit(1), 10_000);
+  forceTimer.unref();
+  httpServer.close(() => {
+    closeStore();
+    clearTimeout(forceTimer);
+    process.exit(0);
+  });
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

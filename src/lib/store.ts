@@ -1,15 +1,16 @@
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { JsonIndex } from "./jsonIndex.js";
+import { SqliteIndex, migrateJsonFileIfPresent, legacyJsonPathFor, closeAllDatabases } from "./sqliteIndex.js";
 import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
 import { safeJoin, assertNotSymlink, classifyExtension, sha256Hex, type MimeCategory } from "./security.js";
+import { DATA_DIR } from "./runtimePaths.js";
 
-const DATA_DIR = path.join(import.meta.dirname, "..", "..", "data");
 const STAGING_DIR = path.join(DATA_DIR, "staging");
 const FILES_DIR = path.join(DATA_DIR, "files");
 const RESULTS_DIR = path.join(DATA_DIR, "results");
 const META_DIR = path.join(DATA_DIR, "meta");
+const STATE_DB_PATH = path.join(META_DIR, "state.sqlite");
 
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
 const DOWNLOAD_TTL_MS = 15 * 60 * 1000;
@@ -59,17 +60,41 @@ export interface DownloadTicket {
   expiresAt: string;
 }
 
-const uploads = new JsonIndex<PendingUpload>(path.join(META_DIR, "uploads.json"));
-const files = new JsonIndex<FileRecord>(path.join(META_DIR, "files.json"));
-const jobs = new JsonIndex<JobRecord>(path.join(META_DIR, "jobs.json"));
-const deletes = new JsonIndex<DeleteTicket>(path.join(META_DIR, "deletes.json"));
-const downloads = new JsonIndex<DownloadTicket>(path.join(META_DIR, "downloads.json"));
+const uploads = new SqliteIndex<PendingUpload>(STATE_DB_PATH, "uploads");
+const files = new SqliteIndex<FileRecord>(STATE_DB_PATH, "files");
+const jobs = new SqliteIndex<JobRecord>(STATE_DB_PATH, "jobs");
+const deletes = new SqliteIndex<DeleteTicket>(STATE_DB_PATH, "deletes");
+const downloads = new SqliteIndex<DownloadTicket>(STATE_DB_PATH, "downloads");
+
+/**
+ * Idempotent, safe to call on every startup: imports any pre-existing
+ * `JsonIndex`-era `data/meta/<table>.json` file into the now-authoritative
+ * SQLite table of the same name (only if that table is still empty), then
+ * renames the JSON file to `<name>.json.migrated` so it's never silently
+ * lost. See docs/STATE-MIGRATION.md for the full rationale.
+ */
+export async function migrateLegacyJsonMetadata(): Promise<Record<string, number>> {
+  const tables: [string, SqliteIndex<unknown>][] = [
+    ["uploads", uploads as SqliteIndex<unknown>],
+    ["files", files as SqliteIndex<unknown>],
+    ["jobs", jobs as SqliteIndex<unknown>],
+    ["deletes", deletes as SqliteIndex<unknown>],
+    ["downloads", downloads as SqliteIndex<unknown>],
+  ];
+  const migrated: Record<string, number> = {};
+  for (const [name, index] of tables) {
+    const { migrated: count } = await migrateJsonFileIfPresent(legacyJsonPathFor(META_DIR, name), index);
+    if (count > 0) migrated[name] = count;
+  }
+  return migrated;
+}
 
 export async function ensureDirs(): Promise<void> {
   await fs.mkdir(STAGING_DIR, { recursive: true });
   await fs.mkdir(FILES_DIR, { recursive: true });
   await fs.mkdir(RESULTS_DIR, { recursive: true });
   await fs.mkdir(META_DIR, { recursive: true });
+  await migrateLegacyJsonMetadata();
 }
 
 /** Non-destructive writability probe (fs.access, no file left behind) —
@@ -290,6 +315,21 @@ export async function verifyFile(fileId: string): Promise<{ record: FileRecord; 
   return { record, actualSha256, matches: actualSha256 === record.sha256 };
 }
 
+/**
+ * Every accepted file's SHA-256 is already recorded at `upload_finalize`
+ * time (see docs/SECURITY.md) — this just looks it up against every other
+ * accepted file to answer "has this exact content already been uploaded
+ * before". Read-only, makes no changes and never deletes/merges anything;
+ * a caller (human or agent) decides what a duplicate finding means for
+ * their workflow. `excludeFileId` lets a caller check "does this file I
+ * already have have any duplicates" without the file always trivially
+ * matching itself.
+ */
+export async function findFilesBySha256(sha256: string, excludeFileId?: string): Promise<FileRecord[]> {
+  const all = await listFiles();
+  return all.filter((f) => f.sha256 === sha256 && f.fileId !== excludeFileId);
+}
+
 /** Live disk-usage snapshot for the health tool — counts every accepted
  * file (including ones currently `pendingDelete`, since their bytes are
  * still on disk until `delete_apply` actually runs) plus how many bytes
@@ -312,6 +352,17 @@ export async function getStorageStats(): Promise<{
   }
   const staged = await fs.readdir(STAGING_DIR).catch(() => [] as string[]);
   return { fileCount: all.length, totalBytes, stagingFileCount: staged.length, byMimeCategory };
+}
+
+/** Job-count breakdown by state for the health tool — cheap to compute
+ * (one full read of the jobs table, no pagination) and lets an operator
+ * see "are jobs piling up failed/pending" without paginating through
+ * rheinagent_file_job_list themselves. */
+export async function getJobStats(): Promise<{ prepared: number; completed: number; failed: number }> {
+  const all = await jobs.values();
+  const stats = { prepared: 0, completed: 0, failed: 0 };
+  for (const j of all) stats[j.state]++;
+  return stats;
 }
 
 /**
@@ -465,4 +516,9 @@ export async function readJobResult(jobId: string): Promise<unknown | undefined>
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
   }
+}
+
+/** Closes cached SQLite handles during graceful process shutdown/tests. */
+export function closeStore(): void {
+  closeAllDatabases();
 }

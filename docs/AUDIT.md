@@ -1,128 +1,192 @@
 # Audit
 
-## Vertrag
+## Vertrag und Source of Truth
 
 Dieses Produkt betreibt **keine eigene** Audit-Datenbank, Hash-Chain,
-Root-Identität oder Checkpoint-Engine. Jegliche Audit-Funktionalität läuft
-ausschließlich über den zentralen RheinAgent Audit Hub
-(`Codeelchi/rheinagent-audit`), per thin client in `src/lib/audit.ts` — in
-Übereinstimmung mit ADR-013 ("MCP Opt-In Integration Contract"): ein Produkt
-darf nur ein Profil-Manifest + dünnen Client-Adapter enthalten, keine eigene
-Speicherung, keinen eigenen Ed25519-Checkpoint-Signierer, keinen eigenen
-Viewer.
+Root-Identitaet, Signatur- oder Checkpoint-Engine. Es integriert ausschliesslich
+den zentralen RheinAgent Audit Hub (`Codeelchi/rheinagent-audit`) ueber:
 
-## Zwei Modi, `RA_AUDIT_MODE`
+1. das produkt-eigene Profil `rheinagent-file-upload@1`,
+2. den duennen TypeScript-Adapter `src/lib/audit.ts`.
+
+Der bei der aktuellen Abnahme verifizierte Audit-Stand ist
+`eb6765ed2c5e59ae9ae66021211e02fed66fae6a` mit installierter
+Hub-Version `rheinagent-audit-core 0.2.0rc1`. Vor einer spaeteren Aenderung des
+Adapters den aktuellen Audit-main erneut pruefen.
+
+## Betriebsmodi
+
+`RA_AUDIT_MODE` kennt zwei Werte:
 
 | Modus | Verhalten |
 |---|---|
-| `off` (**Default**) | Keine Hub-Abhängigkeit, keine Registrierung, kein Credential, kein Netzwerkaufruf. Normale Tool-Funktion unverändert. |
-| `hub` | Voller Write-Ahead-Vertrag für kritische Mutationen (siehe unten), fail-closed. |
+| `off` (**Default**) | Keine Hub-Abhaengigkeit und keine Audit-Netzwerkaufrufe. |
+| `hub` | Zentraler Hub ist fuer kritische Mutationen Teil des Sicherheitsvertrags. |
 
-## Credential-Trennung
+Konfiguration:
 
-```text
-RA_AUDIT_MODE=off|hub
-RA_AUDIT_ENDPOINT=http://127.0.0.1:8766
-RA_AUDIT_SERVICE_ID=<opaque service id>
-RA_AUDIT_CREDENTIAL_PATH=<Pfad zu einer geschützten Credential-Datei>
-RA_AUDIT_PROTOCOL_VERSION=rheinagent-audit/1
-```
+- `RA_AUDIT_MODE=off|hub`
+- `RA_AUDIT_ENDPOINT`
+- `RA_AUDIT_SERVICE_ID`
+- `RA_AUDIT_CREDENTIAL_PATH`
+- `RA_AUDIT_PROTOCOL_VERSION`
+- `RA_AUDIT_ALLOW_PRIVATE_HTTP=false`
 
-Das Service-Credential ist ein eigenständiges, rotierbares Token — **niemals**
-der Manager-Credential oder ein Lizenzcode (siehe [LICENSE-FLOW.md](LICENSE-FLOW.md)).
-Es wird ausschließlich aus `RA_AUDIT_CREDENTIAL_PATH` gelesen, nie inline aus
-einer Umgebungsvariable, nie geloggt. Ein kompromittiertes Credential dieses
-Produkts legt keine andere Service-Chain offen (Hub-seitige Eigenschaft,
-nicht etwas, das dieses Produkt selbst durchsetzt).
+Loopback-HTTP ist erlaubt. Nicht-loopback HTTP wird standardmaessig abgelehnt;
+nur fuer einen bewusst geschuetzten internen Transport darf
+`RA_AUDIT_ALLOW_PRIVATE_HTTP=true` gesetzt werden. HTTPS ist ohne dieses
+Opt-in zulaessig.
 
-> **Hinweis zur Namensgebung:** Andere RheinAgent-Produkte verwenden
-> uneinheitliche Variablennamen (`rheinagent-knowledge-mcp` nutzt z. B.
-> `RA_AUDIT_HUB_URL` statt `RA_AUDIT_ENDPOINT`). Dieses Produkt folgt der
-> Namensgebung aus `rheinagent-backoffice` (`RA_AUDIT_ENDPOINT` +
-> `RA_AUDIT_SERVICE_ID` + `RA_AUDIT_CREDENTIAL_PATH`) als jüngerem,
-> ausführlicher dokumentiertem Integrationsvertrag. Diese Inkonsistenz
-> zwischen Produkten ist plattformweit ungelöst — siehe [HANDOFF.md](HANDOFF.md).
+Das Service-Credential ist eigenstaendig und rotierbar. Es ist **kein**
+Manager-Credential und **kein** Lizenzcode. Der Adapter liest es nur aus
+`RA_AUDIT_CREDENTIAL_PATH`; Credential-Wert, Authorization-Header und
+Dateiinhalte duerfen nie im Audit-Metadatenfeld landen.
 
 ## Profil `rheinagent-file-upload@1`
 
-Audit-Profil und Package-v2-Profil tragen denselben Bezeichner
-(`rheinagent-file-upload@1`), sind aber unterschiedliche Artefakte: das
-Package-v2-Profil beschreibt die Manager-Aktivierung (siehe
-[VERSIONING.md](VERSIONING.md)), das Audit-Profil die `allowed_metadata_keys`
-pro Aktion (Tabelle unten). Beide müssen Hub-/Manager-seitig unabhängig
-registriert werden (siehe [HANDOFF.md](HANDOFF.md)).
+`AUDIT_PROFILE_ID` in `src/lib/audit.ts` ist die Runtime-Konstante. Das portable
+Hub-Profil liegt unter `audit/rheinagent-file-upload-v1.json`. Der
+Drift-Test `test/audit-profile.test.ts` erzwingt, dass:
 
-## Lese-Semantik (Invocation, fail-open)
+- alle 18 registrierten MCP-Tools genau einmal im Profil vorkommen,
+- Action, Classification, Risk, `sensitive`, `write_ahead` und
+  Metadaten-Allowlist exakt mit `AUDIT_ACTIONS` uebereinstimmen,
+- jede WRITE/DELETE/SECURITY/CONFIG/UPDATE-Aktion write-ahead ist.
 
-`rheinagent_file_capabilities_get`, `_health_get`, `_list`, `_get`, `_job_get`,
-`_result_get` sowie die Prepare-Schritte (`upload_prepare`,
-`download_prepare`, `process_prepare`, `delete_prepare`) erzeugen höchstens ein
-Invocation-Event über `auditInvocation()`. Im `hub`-Modus degradiert ein
-Hub-Fehler hier stillschweigend (Policy `RA_AUDIT_POLICY=normal`) — die
-Tool-Funktion wird dadurch nie blockiert.
+Das Docker-Image kopiert das Profil nach `/app/audit` mit ein. Die eigentliche
+produktive Hub-Registrierung samt Service-Credential bleibt ein separater
+Deployment-/Cross-Repo-Schritt und ist nicht im Produkt-Image eingebrannt.
 
-## Kritische Schreib-Semantik (Write-Ahead, fail-closed)
+## Tool-/Action-Matrix
 
-`upload_finalize`, `process_apply` und `delete_apply` laufen über
+| Tool | Audit-Aktion | Klasse / Risiko | Write-ahead | Erlaubte Metadaten |
+|---|---|---|---|---|
+| `rheinagent_file_capabilities_get` | `file.capabilities.read` | READ / low | nein | - |
+| `rheinagent_file_health_get` | `file.health.read` | READ / low | nein | `status` |
+| `rheinagent_file_upload_prepare` | `file.upload.prepare` | PREPARE / low | nein | `mime_category`, `declared_size_bytes` |
+| `rheinagent_file_upload_finalize` | `file.upload.finalize` | WRITE / high | **ja** | `mime_category`, `final_size_bytes`, `verification_result` |
+| `rheinagent_file_list` | `file.list` | READ / low | nein | `result_count` |
+| `rheinagent_file_get` | `file.read` | READ / medium, sensitive | nein | - |
+| `rheinagent_file_rename` | `file.rename` | WRITE / medium | **ja** | `mime_category`, `verification_result` |
+| `rheinagent_file_verify` | `file.verify` | READ / medium | nein | `matches` |
+| `rheinagent_file_duplicate_check` | `file.duplicate.check` | READ / medium | nein | `duplicate_count` |
+| `rheinagent_file_knowledge_handoff_prepare` | `file.knowledge.handoff.prepare` | PREPARE / medium, sensitive | nein | `has_content` |
+| `rheinagent_file_download_prepare` | `file.download.prepare` | PREPARE / medium, sensitive | nein | - |
+| `rheinagent_file_process_prepare` | `file.process.prepare` | PREPARE / low | nein | `processor_id` |
+| `rheinagent_file_process_apply` | `file.process.apply` | WRITE / high | **ja** | `processor_id`, `verification_result` |
+| `rheinagent_file_job_get` | `file.job.read` | READ / low | nein | - |
+| `rheinagent_file_job_list` | `file.job.list` | READ / low | nein | `result_count` |
+| `rheinagent_file_result_get` | `file.result.read` | READ / medium, sensitive | nein | - |
+| `rheinagent_file_delete_prepare` | `file.delete.prepare` | PREPARE / medium | nein | - |
+| `rheinagent_file_delete_apply` | `file.delete.apply` | DELETE / high | **ja** | `verification_result` |
+
+`rheinagent_file_delete_prepare` setzt nur den reversiblen Pending-Delete-Zustand
+und bleibt bewusst PREPARE. Die irreversible Loeschung passiert erst in
+`rheinagent_file_delete_apply` und ist write-ahead. Dasselbe Prepare/Apply-Prinzip
+gilt fuer Verarbeitung.
+
+## READ/PREPARE: Invocation-Semantik
+
+Nicht-kritische Aufrufe senden im Hub-Modus ein `POST /v1/events/invocation`
+mit mindestens:
+
+- semantischer `action`,
+- `tool`,
+- `result: "success"`,
+- nur erlaubten `metadata`,
+- eindeutiger `X-RA-Request-Id`.
+
+Die normale Policy ist gezielt fail-open **nur bei echter Hub-Unverfuegbarkeit**
+(Netzwerk/Timeout/5xx). Ein 4xx-Fehler wie falsches Credential, unbekanntes
+Profil oder Contract-Verletzung wird nicht verschluckt, weil er eine
+Konfigurations-/Deployment-Luecke darstellt.
+
+## Kritische Mutationen: Write-Ahead und Reconciliation
+
+`rheinagent_file_upload_finalize`, `rheinagent_file_rename`,
+`rheinagent_file_process_apply` und `rheinagent_file_delete_apply` laufen ueber
 `auditCriticalWrite()`:
 
-```text
-Client  -> POST /v1/events/begin  (INTENT)
-Hub     -> durable append + ACK "intent_durable"
-Client  -> Business-Mutation (erst jetzt!)
-Client  -> POST /v1/events/phase APPLY
-Client  -> POST /v1/events/phase VERIFY
-Client  -> POST /v1/events/phase RESULT
-```
+1. `POST /v1/events/begin` muss `status: "intent_durable"` und eine
+   `correlation_id` liefern.
+2. Erst danach darf die Business-Mutation laufen.
+3. Danach folgen `APPLY`, reale Business-Postcondition, `VERIFY` und `RESULT`.
+4. Erst nach erfolgreichem `RESULT` gilt der Audit-Lifecycle als vollstaendig.
 
-Ohne `intent_durable`-ACK wird die Mutation **nicht ausgeführt** — das ist
-im Code erzwungen (`auditCriticalWrite` wirft, bevor `mutation()` je
-aufgerufen wird). Ein `RESULT=success` ohne vorherige durable APPLY wird
-Hub-seitig abgelehnt (außerhalb der Kontrolle dieses Produkts).
+Die Phase-Requests verwenden den vom Hub gelieferten `correlation_id`; der
+Client erfindet keine `request_id` im Body. Fuer Idempotenz/Replay-Schutz wird
+pro HTTP-Aufruf ein eindeutiger `X-RA-Request-Id`-Header gesetzt.
 
-**Wichtiger Hinweis zum Implementierungsstand:** Dieser Write-Ahead-Pfad ist
-gegen die dokumentierte Spezifikation (`rheinagent-audit` ARCHITECTURE.md §6,
-ADR-002/004/008/013) implementiert, aber **noch nicht gegen eine laufende
-Hub-Instanz verifiziert**. Status: implementiert, nicht live getestet — siehe
-[HANDOFF.md](HANDOFF.md).
+Semantik bei Fehlern:
 
-### Abweichung von der ursprünglichen Vorgabe (dokumentiert, nicht stillschweigend)
+- **Vor durable INTENT:** Mutation wird nicht gestartet. Fail-closed.
+- **Business-Mutation wirft:** best-effort `RESULT failure`; der eigentliche
+  Business-Fehler bleibt sichtbar.
+- **Hub faellt nach erfolgreicher Mutation aus:** `AuditIncompleteError`. Der
+  Aufrufer darf nicht behaupten, die Business-Aktion sei nicht passiert, und
+  darf nicht blind wiederholen. Hub-/Business-Zustand muss reconciled werden.
+- **Reale Postcondition schlaegt fehl:** best-effort `RESULT failure` und
+  `AuditBusinessVerificationError`; auch hier kein blinder Retry.
 
-Die Produktvorgabe gruppiert `delete_prepare` und `delete_apply` beide unter
-`DELETE/high, write_ahead=true`. Diese Implementierung behandelt nur
-`delete_apply` als kritische Schreib-Mutation (write-ahead) und
-`delete_prepare` als reversibles PREPARE (nur Invocation) — konsistent mit
-dem Read/Prepare/Apply/Verify-Prinzip: das Setzen von `pendingDelete=true`
-ist folgenlos rückgängig machbar, die tatsächliche Löschung nicht. Analog für
-`process_prepare` (Invocation) vs. `process_apply` (Write-Ahead).
+Besonders bei `rheinagent_file_process_apply` wird ein bereits erfolgreich
+geschriebener Result-/Job-Zustand bei nachgelagertem Audit-Ausfall **nicht**
+nachtraeglich als `failed` ummarkiert.
 
-## Audit-Privacy-Allowlist
+## Health/Doctor
 
-Pro Tool/Aktion ist eine feste Menge erlaubter Metadaten-Schlüssel
-festgelegt — niemals Dateiname, Pfad, Inhalt oder extrahierter Text:
+`rheinagent_file_health_get` prueft im Hub-Modus getrennt:
 
-| Tool | Aktion | Erlaubte Keys | Verboten (nie im Journal) |
-|---|---|---|---|
-| `rheinagent_file_health_get` | `rheinagent_file_health_get` (Invocation) | `status` | Audit-Credentials, Hub-Endpoint-URL |
-| `rheinagent_file_upload_prepare` | `file.upload.prepare` (Invocation) | `mime_category`, `declared_size_bytes` | Dateiname, Pfad |
-| `rheinagent_file_upload_finalize` | `file.upload.finalize` (WRITE, write-ahead) | `mime_category`, `final_size_bytes` | Dateiname, Inhalt, Hash als Klartext |
-| `rheinagent_file_list` | `rheinagent_file_list` (Invocation) | `result_count` | Dateinamen der Liste |
-| `rheinagent_file_get` | `rheinagent_file_get` (Invocation) | — | Inhalt |
-| `rheinagent_file_download_prepare` | `rheinagent_file_download_prepare` (Invocation) | — | Dateiname, Pfad, Inhalt |
-| `rheinagent_file_process_prepare` | `rheinagent_file_process_prepare` (Invocation) | `processor_id` | — |
-| `rheinagent_file_process_apply` | `file.process.apply` (WRITE, write-ahead) | `processor_id` | Verarbeitungsergebnis/-inhalt |
-| `rheinagent_file_delete_apply` | `file.delete.apply` (DELETE, write-ahead) | — | Dateiname |
+- Audit-Konfiguration vollstaendig,
+- unauthentifiziertes Hub-Liveness `GET /healthz`,
+- authentifiziertes `GET /v1/service/health` fuer genau die konfigurierte
+  Service-ID und Credential-Datei.
 
-Die in `src/lib/audit.ts` hinterlegte `SENSITIVE_KEY_PATTERNS`-Liste blockt
-zusätzlich verdächtige Schlüsselnamen (`content`, `path`, `filename`, …) als
-Verteidigung in der Tiefe, selbst falls eine Allowlist versehentlich einen
-solchen Key enthielte. `content_logged` ist im Vertrag fest `false` — nicht
-konfigurierbar, kein Override.
+Fehlt eine dieser Voraussetzungen oder meldet der Service nicht `HEALTHY`,
+meldet der Produkt-Healthcheck `degraded`. Credential-Werte werden nicht
+zurueckgegeben. Falls die Audit-Konfiguration bereits als kaputt erkannt wurde,
+versucht das Health-Tool nicht zusaetzlich, seine eigene Invocation zu senden;
+so bleibt die Diagnose sichtbar.
 
-## Installer-/Profil-Migration
+## Privacy-Allowlist
 
-Entfällt für v1 (kein Vorgänger-Audit-Profil). Ein künftiger
-Profil-Versionswechsel (`rheinagent-file-upload@2`) dürfte bestehende
-Credentials nicht stillschweigend auf das neue Profil ummünzen (gleiche
-Regel wie bei anderen RheinAgent-Produkten, siehe Briefing-Kontradiktionen
-in [HANDOFF.md](HANDOFF.md)).
+Audit-Metadaten sind absichtlich information-arm. Die pro Action erlaubten
+Keys stehen im Profil oben. Zusaetzlich blockiert `sanitizeMetadata()`
+verdachtige Schluesselnamen wie `name`, `filename`, `path`, `content`,
+`text`, `hash`, `token`, `credential`, `authorization` oder `secret`, selbst
+wenn jemand sie spaeter versehentlich in eine Runtime-Allowlist aufnehmen
+wuerde. Strings werden begrenzt und pro Event werden hoechstens 16
+Metadatenfelder uebertragen.
+
+Dateiname, Dateipfad, Dateiinhalt, extrahierter Text, Hash-Klartext und
+Credential-Werte sind keine Audit-Nutzdaten dieses Produkts.
+
+## Live-Abnahme 2026-09-12
+
+Der Adapter wurde nicht nur mit Mock-Tests, sondern gegen eine **echte,
+isolierte** Instanz der auf dem Windows-Testhost installierten
+`rheinagent-audit-core 0.2.0rc1` verifiziert. Dabei wurde bewusst ein eigener
+Temp-State und Loopback-Port 18766 verwendet; der produktive Mail-Hub auf Port
+8766 blieb unberuehrt.
+
+Verifiziert:
+
+- Profil `rheinagent-file-upload@1` wird vom Hub geladen und enthaelt 18 Tools.
+- Eigener Test-Service + eigenes Credential authentifizieren erfolgreich.
+- `/healthz` und authentifiziertes `/v1/service/health` = healthy.
+- Ein echter Invocation-Event wird akzeptiert.
+- `file.upload.finalize` durchlaeuft INTENT -> APPLY -> VERIFY -> RESULT.
+- Negativtest mit ungueltiger Service-ID beweist Fail-closed vor der Mutation;
+  der Mutation-Callback wurde nicht ausgefuehrt.
+- Hub `verify` = true.
+- Operation `file.upload.finalize` = `complete` / `success`.
+- `open_intents` = 0 und Hub-Health = `ok` nach Abschluss.
+
+Der isolierte Hub-Prozess, Temp-State und das Test-Credential wurden danach
+vollstaendig entfernt. Diese Abnahme beweist den Produkt-/Hub-Vertrag; sie ist
+**keine** produktive Registrierung von `rheinagent-file-upload@1` im zentralen
+Kunden-Hub.
+
+Automatisierte Contract-Tests liegen in `test/audit.test.ts` und
+`test/audit-profile.test.ts`. Der wiederverwendbare Live-Smoke liegt unter
+`scripts/audit-hub-e2e.mjs` und erwartet eine bereits isoliert registrierte
+Hub-Service-Konfiguration ueber die oben genannten Umgebungsvariablen.

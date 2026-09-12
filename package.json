@@ -1,13 +1,18 @@
 {
   "name": "rheinagent-file-upload",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "serve": "tsx server.ts",
     "serve:dataplane": "tsx dataplane.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:dataplane": "node dist/dataplane.js",
+    "smoke:seed": "node scripts/runtime-smoke.mjs seed .runtime-smoke-state.json",
+    "smoke:verify": "node scripts/runtime-smoke.mjs verify .runtime-smoke-state.json"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",

@@ -5,3 +5,6 @@ data/
 .env
 *.key
 *.crt
+.runtime-smoke-state.json
+.state/
+__pycache__/

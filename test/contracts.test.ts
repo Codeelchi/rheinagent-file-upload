@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FileIdField, JobIdField, UploadIdField, DeleteTokenField, HealthSchema } from "../src/lib/schemas.js";
+import { FileIdField, JobIdField, UploadIdField, DeleteTokenField, HealthSchema, Sha256Field, DuplicateCheckInputSchema } from "../src/lib/schemas.js";
 import { toWireFile, toWireJob, toWireDeleteTicket } from "../src/lib/wire.js";
 import { newFileId, newJobId, newUploadId, newDeleteToken } from "../src/lib/ids.js";
 import type { FileRecord, JobRecord, DeleteTicket } from "../src/lib/store.js";
@@ -102,11 +102,15 @@ test("toWireDeleteTicket produces the snake_case DeleteTicketResultSchema shape"
 test("HealthSchema accepts storage.by_mime_category with only some categories present", () => {
   const body = {
     health_profile: "rheinagent-file-upload-v1",
+    product_version: "0.2.0",
+    state_schema_version: 1,
     status: "ok" as const,
     control_plane_reachable: true as const,
     data_plane_reachable: true,
     staging_dir_writable: true,
     files_dir_writable: true,
+    processor_registry: { processor_count: 11 },
+    jobs: { prepared: 0, completed: 0, failed: 0 },
     storage: {
       file_count: 2,
       total_bytes: 30,
@@ -117,4 +121,22 @@ test("HealthSchema accepts storage.by_mime_category with only some categories pr
   };
   const parsed = HealthSchema.safeParse(body);
   assert.equal(parsed.success, true, parsed.success ? undefined : JSON.stringify(parsed.error.issues));
+});
+
+test("Sha256Field accepts a real 64-char lowercase hex digest, rejects everything else", () => {
+  const real = "a".repeat(64);
+  assert.equal(Sha256Field.safeParse(real).success, true);
+  assert.equal(Sha256Field.safeParse(real.toUpperCase()).success, false, "must be lowercase");
+  assert.equal(Sha256Field.safeParse(real.slice(0, 63)).success, false, "too short");
+  assert.equal(Sha256Field.safeParse(`${real}0`).success, false, "too long");
+  assert.equal(Sha256Field.safeParse("not-hex-at-all").success, false);
+});
+
+test("DuplicateCheckInputSchema requires exactly one of file_id/sha256", () => {
+  const fileId = newFileId();
+  const sha = "a".repeat(64);
+  assert.equal(DuplicateCheckInputSchema.safeParse({ file_id: fileId }).success, true);
+  assert.equal(DuplicateCheckInputSchema.safeParse({ sha256: sha }).success, true);
+  assert.equal(DuplicateCheckInputSchema.safeParse({}).success, false, "neither given");
+  assert.equal(DuplicateCheckInputSchema.safeParse({ file_id: fileId, sha256: sha }).success, false, "both given");
 });

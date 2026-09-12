@@ -1,13 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
 import {
   classifyExtension,
   sniffMimeCategory,
   safeJoin,
   sha256Hex,
+  assertNotSymlink,
 } from "../src/lib/security.js";
 import { assertOpaqueId, newFileId, newUploadId } from "../src/lib/ids.js";
+import { buildSampleDocx, buildSampleXlsx, buildZip } from "./testZip.js";
 
 // --- opaque id enforcement: path traversal must be rejected before any fs path is built ---
 
@@ -38,6 +42,8 @@ test("classifyExtension accepts the documented allowlist", () => {
   assert.equal(classifyExtension("notes.txt"), "text");
   assert.equal(classifyExtension("report.pdf"), "pdf");
   assert.equal(classifyExtension("photo.png"), "image");
+  assert.equal(classifyExtension("report.docx"), "office");
+  assert.equal(classifyExtension("sheet.xlsx"), "office");
 });
 
 // --- magic-byte sniffing vs claimed extension (the core upload security test) ---
@@ -87,4 +93,79 @@ test("sha256Hex is deterministic", () => {
   const a = sha256Hex(Buffer.from("same input"));
   const b = sha256Hex(Buffer.from("same input"));
   assert.equal(a, b);
+});
+
+// --- office (docx/xlsx) sniffing: a genuine OOXML container vs. a lookalike plain zip ---
+
+test("sniffMimeCategory recognizes a genuine docx as office, not generic archive", () => {
+  assert.equal(sniffMimeCategory(buildSampleDocx()), "office");
+});
+
+test("sniffMimeCategory recognizes a genuine xlsx as office, not generic archive", () => {
+  assert.equal(sniffMimeCategory(buildSampleXlsx()), "office");
+});
+
+test("sniffMimeCategory treats a plain zip (no OOXML content-type declaration) as archive, not office", () => {
+  const plainZip = buildZip([{ name: "hello.txt", content: Buffer.from("just a plain zip") }]);
+  assert.equal(sniffMimeCategory(plainZip), "archive");
+});
+
+test("sniffMimeCategory rejects a plain-zip-renamed-to-.docx at the declared/sniffed consistency check", () => {
+  // Mirrors the existing "PNG smuggled under .txt" test: renaming a plain
+  // zip to .docx must not be enough to pass upload_finalize's consistency
+  // check, since the sniffed category (archive) won't match declared (office).
+  const plainZip = buildZip([{ name: "hello.txt", content: Buffer.from("just a plain zip") }]);
+  const declared = classifyExtension("fake.docx");
+  const sniffed = sniffMimeCategory(plainZip);
+  assert.equal(declared, "office");
+  assert.notEqual(sniffed, declared);
+});
+
+test("sniffMimeCategory fails closed (archive) for a docx whose [Content_Types].xml is malformed/missing", () => {
+  const brokenDocx = buildZip([{ name: "word/document.xml", content: Buffer.from("<w:document/>") }]);
+  assert.equal(sniffMimeCategory(brokenDocx), "archive");
+});
+
+// --- symlink refusal: assertNotSymlink is the last line of defense before any write/rename target ---
+
+test("assertNotSymlink refuses to proceed when a symlink already exists at the target path", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    const realTarget = path.join(dir, "real-file");
+    await fs.writeFile(realTarget, "not relevant");
+    const symlinkPath = path.join(dir, "suspicious-symlink");
+    try {
+      await fs.symlink(realTarget, symlinkPath);
+    } catch (err) {
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        t.skip("Windows account cannot create symlinks without Developer Mode/elevated privilege");
+        return;
+      }
+      throw err;
+    }
+
+    await assert.rejects(() => assertNotSymlink(symlinkPath), /refusing to operate through a symlink/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertNotSymlink is a no-op when nothing exists yet at the target path (the normal case)", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    await assert.doesNotReject(() => assertNotSymlink(path.join(dir, "does-not-exist-yet")));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertNotSymlink is a no-op for an existing plain (non-symlink) file", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
+  try {
+    const plainFile = path.join(dir, "plain-file");
+    await fs.writeFile(plainFile, "ordinary content");
+    await assert.doesNotReject(() => assertNotSymlink(plainFile));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

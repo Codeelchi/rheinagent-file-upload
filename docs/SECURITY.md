@@ -59,9 +59,15 @@ durchlaufen, bevor eine Datei die Quarantine verlässt:
 2. **Tatsächliche Staging-Größe** ≤ demselben Limit (die Data Plane bricht
    zusätzlich bereits während des Streams ab, sobald das Limit überschritten wird)
 3. **Extension-Allowlist** (`classifyExtension`) — nur `.txt .md .csv .json
-   .pdf .png .jpg .jpeg`
+   .pdf .png .jpg .jpeg .docx .xlsx`
 4. **Magic-Byte-Sniffing** (`sniffMimeCategory`) der tatsächlichen Bytes,
-   unabhängig von der deklarierten Extension
+   unabhängig von der deklarierten Extension. Für `.docx`/`.xlsx` reicht der
+   ZIP-Magic-Byte (`PK\x03\x04`) allein nicht — `sniffMimeCategory` prüft
+   zusätzlich per bounded Unzip (`src/lib/officeZip.ts`), ob `[Content_Types].xml`
+   tatsächlich einen `wordprocessingml.document.main`- bzw.
+   `spreadsheetml.sheet.main`-Content-Type deklariert. Ein einfaches, auf
+   `.docx` umbenanntes `.zip` bleibt dadurch als `archive` klassifiziert und
+   scheitert an Prüfung 5 unten, statt als `office` durchzurutschen.
 5. **Konsistenzprüfung**: deklarierte Kategorie muss der gesniffelten
    Kategorie entsprechen — ein als `.txt` deklariertes PNG wird abgelehnt
    (verifizierter Testfall, siehe [BUILDLOG.md](../BUILDLOG.md))
@@ -71,12 +77,62 @@ durchlaufen, bevor eine Datei die Quarantine verlässt:
 
 ## Archive-Bomb-Grenzen
 
-Archivformate (`.zip .tar .gz .7z .rar`, auch via Magic-Byte-Erkennung `PK\x03\x04`)
-werden **grundsätzlich abgelehnt**, nicht größenbeschränkt entpackt. Diese
-Version enthält keinen Entpack-Processor — das Archive-Bomb-Risiko ist damit
-strukturell ausgeschlossen, nicht durch eine Kompressionsverhältnis-Heuristik
-gemindert. Ein künftiger Entpack-Processor müsste diese Begrenzung explizit
-und mit echten Größen-/Tiefenlimits neu einführen (siehe [HANDOFF.md](HANDOFF.md)).
+Generische Archivformate (`.zip .tar .gz .7z .rar`) werden weiterhin
+**grundsätzlich abgelehnt**, nicht größenbeschränkt entpackt — für alles
+außer den beiden unten beschriebenen OOXML-Formaten bleibt das
+Archive-Bomb-Risiko strukturell ausgeschlossen, nicht durch eine
+Kompressionsverhältnis-Heuristik gemindert.
+
+**`.docx`/`.xlsx` sind seit 2026-09-11 die einzige Ausnahme** — beide sind
+intern ZIP-Container (OOXML), aber echte Zielformate für Dokumentenanalyse
+(siehe [PROCESSORS.md](PROCESSORS.md)). `src/lib/officeZip.ts` implementiert
+dafür einen eigenen, bewusst eingeschränkten ZIP-Reader statt eines
+allgemeinen Entpack-Processors:
+
+- **Kein Schreiben auf die Platte.** Entpackte Inhalte bleiben ausschließlich
+  im Prozessspeicher — Entry-Namen werden nie als Dateisystempfad verwendet,
+  klassisches Zip-Slip ist dadurch strukturell nicht anwendbar.
+- **Nur explizit angeforderte Entries werden überhaupt entpackt.**
+  `docx_extract_text` entpackt ausschließlich `word/document.xml`,
+  `xlsx_inspect` ausschließlich `xl/workbook.xml`, `xl/sharedStrings.xml`
+  und die eine angefragte `xl/worksheets/sheetN.xml` — jeder andere Eintrag
+  im Archiv wird aus der Central Directory gelesen, aber nie inflatiert.
+- **Harte Größenlimits pro Entry und kumulativ** (`maxEntryInflatedBytes`
+  20 MiB, `maxTotalInflatedBytes` 40 MiB) über Node's eigenes
+  `zlib.inflateRawSync(..., { maxOutputLength })` — bricht **während** des
+  Inflate ab, bevor ein übergroßer Buffer je vollständig im Speicher
+  existiert. Live verifiziert: eine 25-MiB-hochkomprimierbare Nutzlast
+  (komprimiert auf wenige KB) wird sauber als Job-Fehler abgelehnt, nie
+  materialisiert.
+- **Harte Obergrenze für die Anzahl Central-Directory-Einträge** (5000) —
+  Schutz gegen einen Entry-Count-Bomb unabhängig von jeder Einzelgröße.
+  Live verifiziert: ein Archiv mit 6000 leeren Einträgen scheitert vor jedem
+  Inflate-Versuch.
+- **`sharedStrings`-Bomb** (sehr viele deklarierte Shared Strings in
+  `xl/sharedStrings.xml`): `parseSharedStrings()` (`src/lib/officeXml.ts`)
+  bricht das Einlesen nach 20 000 Einträgen ab und meldet
+  `shared_strings_truncated: true`, statt ein unbegrenztes Array aufzubauen.
+  Live verifiziert mit 50 000 deklarierten Einträgen.
+- **Zeilen-/Zellen-Limits bei `xlsx_inspect`**: maximal 5000 Zeilen gescannt,
+  maximal 20 Beispielzeilen materialisiert, jede Zelle auf 500 Zeichen
+  gekappt.
+- **Kein XXE-Risiko**: `src/lib/officeXml.ts` ist bewusst **kein** allgemeiner
+  XML-Parser, sondern ein enges Tag-/Regex-Scanning für exakt die bekannten
+  OOXML-Tags (`<w:t>`, `<sheet>`, `<si>`, `<row>`/`<c>`). `<!DOCTYPE>`- oder
+  Entity-Deklarationen werden nie interpretiert; die einzigen aufgelösten
+  Entities sind die fünf vordefinierten XML-Entities
+  (`&amp; &lt; &gt; &quot; &apos;`) plus numerische Zeichenreferenzen — es
+  gibt keinen Codepfad, der beim Parsen eine lokale Datei liest oder eine
+  Netzwerkanfrage stellt.
+- **Fail-closed**: jeder Parse-/Inflate-Fehler (korruptes ZIP, fehlender
+  Teil, Größenüberschreitung) wird als klarer Processor-Fehler
+  weitergereicht, nie stillschweigend zu einem Teilergebnis degradiert.
+
+Ein künftiger allgemeiner Entpack-Processor (echte `.zip`/`.tar`-Uploads)
+müsste diese Begrenzung für generische Archive weiterhin separat und mit
+eigenen Größen-/Tiefenlimits neu einführen (siehe [HANDOFF.md](HANDOFF.md)) —
+die obige Lösung ist bewusst eng auf die beiden konkreten OOXML-Formate
+zugeschnitten, kein allgemeiner Unzip-Mechanismus.
 
 ## Rate-Limiting
 
@@ -162,10 +218,13 @@ gibt es keine Audit-Abhängigkeit und keine Verzögerung.
 ## Bekannte Grenzen dieser Version
 
 - Keine Mandanten-/Nutzertrennung — ein Betrieb pro Control-Plane-Instanz.
-- Metadaten-Schreibzugriffe über zwei Prozesse (Control-/Data-Plane) sind
-  "last write wins" bei echter Gleichzeitigkeit auf denselben Datensatz
-  (siehe `src/lib/jsonIndex.ts`) — für Einzelbetrieb akzeptiert, nicht für
-  Hochlast-Mehrinstanz-Szenarien gedacht.
+- Metadaten liegen seit 2026-09-11 in SQLite (WAL-Modus,
+  `src/lib/sqliteIndex.ts`) statt in whole-file-JSON — echte
+  Read-Committed-Transaktionen pro Zeile statt "last write wins" beim
+  gleichzeitigen Schreiben zweier Prozesse auf denselben Datensatz, siehe
+  [STATE-MIGRATION.md](STATE-MIGRATION.md). Weiterhin **kein** verteiltes
+  Locking über mehrere Hosts hinweg — für Einzelbetrieb (Control-/Data-Plane
+  auf demselben Host) gedacht, nicht für Hochlast-Mehrinstanz-Szenarien.
 - `rheinagent_file_get` liefert Inhalt nur für kleine Textdateien inline;
   größere/binäre Dateien laufen über `rheinagent_file_download_prepare` +
   den Data-Plane-`GET /download/:downloadToken`-Endpunkt.

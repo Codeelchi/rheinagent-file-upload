@@ -1,59 +1,58 @@
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-/**
- * Thin client for the central RheinAgent Audit Hub (Codeelchi/rheinagent-audit).
- *
- * This module deliberately does NOT implement its own audit storage, hash
- * chain, root identity, or checkpoint engine — per ADR-013 (MCP Opt-In
- * Integration Contract), a consuming product may only contain a profile
- * manifest + thin client adapter.
- *
- * Two modes only, selected by RA_AUDIT_MODE (default "off"):
- *  - "off":  zero Hub dependency. No registration, no credential, no
- *            network calls. Every function below becomes a pure passthrough.
- *            This is the required default and must keep the product fully
- *            functional on its own.
- *  - "hub":  full write-ahead contract for critical writes (ADR-004,
- *            fail-closed): begin -> durable INTENT -> ACK -> business
- *            mutation -> APPLY -> VERIFY -> RESULT. Without the
- *            `intent_durable` ACK, the mutation callback is never invoked.
- *
- * NOTE: the "hub" path below is implemented to the documented contract
- * (rheinagent-audit docs/ARCHITECTURE.md §6, ADRs 002/004/008/013) but has
- * not been exercised against a live Hub instance yet — see
- * docs/HANDOFF.md. Treat it as implemented-but-unverified.
- */
-
+/** Thin, content-free adapter for the central RheinAgent Audit Hub. */
 export type AuditMode = "off" | "hub";
+export type Classification = "READ" | "PREPARE" | "WRITE" | "DELETE" | "SECURITY" | "CONFIG" | "UPDATE";
+export type AuditRisk = "low" | "medium" | "high";
 
-export type Classification =
-  | "READ"
-  | "PREPARE"
-  | "WRITE"
-  | "DELETE"
-  | "SECURITY"
-  | "CONFIG"
-  | "UPDATE";
+export const AUDIT_PROFILE_ID = "rheinagent-file-upload@1";
 
-const CRITICAL_CLASSIFICATIONS: Classification[] = ["WRITE", "DELETE", "SECURITY", "CONFIG", "UPDATE"];
-
-// Defense in depth: block these substrings in metadata *key names* even if a
-// caller mistakenly tries to allowlist them. Content is never logged
-// (content_logged is schema-fixed false, not configurable) — this list
-// guards against accidentally named keys that would smell like content.
+const CRITICAL_CLASSIFICATIONS: readonly Classification[] = ["WRITE", "DELETE", "SECURITY", "CONFIG", "UPDATE"];
 const SENSITIVE_KEY_PATTERNS = [
   "password", "passwd", "secret", "token", "authorization", "auth_header",
   "cookie", "session_key", "api_key", "apikey", "credential", "private_key",
   "body", "content", "prompt", "completion", "draft_text", "attachment_text",
   "subject", "recipient", "html", "payload", "message_text", "document_text",
   "filename", "path", "filecontent",
-];
+] as const;
 
-function isSensitiveKey(key: string): boolean {
-  const lower = key.toLowerCase();
-  return SENSITIVE_KEY_PATTERNS.some((p) => lower.includes(p));
+export interface AuditActionSpec {
+  action: string;
+  classification: Classification;
+  risk: AuditRisk;
+  writeAhead: boolean;
+  sensitive?: boolean;
+  targetType: string;
+  allowedMetadataKeys: readonly string[];
 }
+
+/**
+ * Runtime mirror of audit/rheinagent-file-upload-v1.json.
+ * test/audit-profile.test.ts makes manifest drift a release gate.
+ */
+export const AUDIT_ACTIONS = {
+  rheinagent_file_capabilities_get: { action: "file.capabilities.read", classification: "READ", risk: "low", writeAhead: false, targetType: "service", allowedMetadataKeys: [] },
+  rheinagent_file_health_get: { action: "file.health.read", classification: "READ", risk: "low", writeAhead: false, targetType: "service", allowedMetadataKeys: ["status"] },
+  rheinagent_file_upload_prepare: { action: "file.upload.prepare", classification: "PREPARE", risk: "low", writeAhead: false, targetType: "file", allowedMetadataKeys: ["mime_category", "declared_size_bytes"] },
+  rheinagent_file_upload_finalize: { action: "file.upload.finalize", classification: "WRITE", risk: "high", writeAhead: true, targetType: "file", allowedMetadataKeys: ["mime_category", "final_size_bytes", "verification_result"] },
+  rheinagent_file_list: { action: "file.list", classification: "READ", risk: "low", writeAhead: false, targetType: "file-index", allowedMetadataKeys: ["result_count"] },
+  rheinagent_file_get: { action: "file.read", classification: "READ", risk: "medium", writeAhead: false, sensitive: true, targetType: "file", allowedMetadataKeys: [] },
+  rheinagent_file_rename: { action: "file.rename", classification: "WRITE", risk: "medium", writeAhead: true, targetType: "file", allowedMetadataKeys: ["mime_category", "verification_result"] },
+  rheinagent_file_verify: { action: "file.verify", classification: "READ", risk: "medium", writeAhead: false, targetType: "file", allowedMetadataKeys: ["matches"] },
+  rheinagent_file_duplicate_check: { action: "file.duplicate.check", classification: "READ", risk: "medium", writeAhead: false, targetType: "file-index", allowedMetadataKeys: ["duplicate_count"] },
+  rheinagent_file_knowledge_handoff_prepare: { action: "file.knowledge.handoff.prepare", classification: "PREPARE", risk: "medium", writeAhead: false, sensitive: true, targetType: "file", allowedMetadataKeys: ["has_content"] },
+  rheinagent_file_download_prepare: { action: "file.download.prepare", classification: "PREPARE", risk: "medium", writeAhead: false, sensitive: true, targetType: "file", allowedMetadataKeys: [] },
+  rheinagent_file_process_prepare: { action: "file.process.prepare", classification: "PREPARE", risk: "low", writeAhead: false, targetType: "job", allowedMetadataKeys: ["processor_id"] },
+  rheinagent_file_process_apply: { action: "file.process.apply", classification: "WRITE", risk: "high", writeAhead: true, targetType: "job", allowedMetadataKeys: ["processor_id", "verification_result"] },
+  rheinagent_file_job_get: { action: "file.job.read", classification: "READ", risk: "low", writeAhead: false, targetType: "job", allowedMetadataKeys: [] },
+  rheinagent_file_job_list: { action: "file.job.list", classification: "READ", risk: "low", writeAhead: false, targetType: "job-index", allowedMetadataKeys: ["result_count"] },
+  rheinagent_file_result_get: { action: "file.result.read", classification: "READ", risk: "medium", writeAhead: false, sensitive: true, targetType: "job-result", allowedMetadataKeys: [] },
+  rheinagent_file_delete_prepare: { action: "file.delete.prepare", classification: "PREPARE", risk: "medium", writeAhead: false, targetType: "file", allowedMetadataKeys: [] },
+  rheinagent_file_delete_apply: { action: "file.delete.apply", classification: "DELETE", risk: "high", writeAhead: true, targetType: "file", allowedMetadataKeys: ["verification_result"] },
+} as const satisfies Record<string, AuditActionSpec>;
+
+export type AuditToolName = keyof typeof AUDIT_ACTIONS;
 
 export interface AuditConfig {
   mode: AuditMode;
@@ -61,12 +60,65 @@ export interface AuditConfig {
   serviceId?: string;
   credentialPath?: string;
   protocolVersion: string;
+  allowPrivateHttp: boolean;
+}
+
+export interface AllowlistedMetadata {
+  [key: string]: string | number | boolean | null;
+}
+
+export class AuditHubClientError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AuditHubClientError";
+  }
+}
+
+export class AuditHubUnavailable extends AuditHubClientError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AuditHubUnavailable";
+  }
+}
+
+/**
+ * Raised only after the business mutation callback has completed. The caller
+ * must not blindly retry or report "nothing changed": reconciliation is
+ * required because the business mutation may already be durable.
+ */
+export class AuditIncompleteError<T = unknown> extends Error {
+  readonly code = "AUDIT_INCOMPLETE";
+  readonly mutationApplied = true;
+
+  constructor(
+    readonly action: string,
+    readonly failedPhase: "APPLY" | "VERIFY" | "RESULT" | "RESULT_AFTER_VERIFY_FAILURE",
+    readonly mutationResult: T,
+    cause: unknown,
+  ) {
+    super(`AUDIT_INCOMPLETE: ${action} mutation completed but audit phase ${failedPhase} did not complete`, { cause });
+    this.name = "AuditIncompleteError";
+  }
+}
+
+/**
+ * A real postcondition failed after the mutation. This is different from an
+ * Audit Hub outage: the Hub receives RESULT=failure when possible.
+ */
+export class AuditBusinessVerificationError<T = unknown> extends Error {
+  readonly code = "BUSINESS_VERIFY_FAILED";
+  readonly mutationApplied = true;
+
+  constructor(readonly action: string, readonly mutationResult: T, cause: unknown) {
+    super(`BUSINESS_VERIFY_FAILED: postcondition check failed for ${action}`, { cause });
+    this.name = "AuditBusinessVerificationError";
+  }
 }
 
 export function loadAuditConfig(): AuditConfig {
   const mode = (process.env.RA_AUDIT_MODE ?? "off") as AuditMode;
   if (mode !== "off" && mode !== "hub") {
-    throw new Error(`invalid RA_AUDIT_MODE "${mode}" (expected "off" or "hub")`);
+    throw new AuditHubClientError(`invalid RA_AUDIT_MODE "${mode}" (expected "off" or "hub")`);
   }
   return {
     mode,
@@ -74,84 +126,15 @@ export function loadAuditConfig(): AuditConfig {
     serviceId: process.env.RA_AUDIT_SERVICE_ID,
     credentialPath: process.env.RA_AUDIT_CREDENTIAL_PATH,
     protocolVersion: process.env.RA_AUDIT_PROTOCOL_VERSION ?? "rheinagent-audit/1",
+    allowPrivateHttp: process.env.RA_AUDIT_ALLOW_PRIVATE_HTTP === "true",
   };
 }
 
-let cachedCredential: string | undefined;
-async function readCredential(cfg: AuditConfig): Promise<string> {
-  if (cachedCredential) return cachedCredential;
-  if (!cfg.credentialPath) throw new Error("RA_AUDIT_CREDENTIAL_PATH not set for hub mode");
-  cachedCredential = (await fs.readFile(cfg.credentialPath, "utf-8")).trim();
-  return cachedCredential;
+function isSensitiveKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
-async function hubFetch(
-  cfg: AuditConfig,
-  method: string,
-  apiPath: string,
-  body?: unknown,
-  requestId?: string,
-): Promise<unknown> {
-  if (!cfg.endpoint || !cfg.serviceId) {
-    throw new Error("RA_AUDIT_ENDPOINT / RA_AUDIT_SERVICE_ID not set for hub mode");
-  }
-  const credential = await readCredential(cfg);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${credential}`,
-    "X-RA-Service-Id": cfg.serviceId,
-    "Content-Type": "application/json",
-  };
-  if (requestId) headers["X-RA-Request-Id"] = requestId;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const res = await fetch(new URL(apiPath, cfg.endpoint), {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`audit hub ${method} ${apiPath} -> HTTP ${res.status}`);
-    }
-    return await res.json().catch(() => ({}));
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/**
- * Best-effort network reachability of RA_AUDIT_ENDPOINT for the health
- * tool — deliberately NOT a protocol-level check against a documented Hub
- * health path (the hub write-ahead contract itself is implemented but
- * unverified against a live instance, see the module docstring above; this
- * repo doesn't get to invent an unverified health-endpoint contract on
- * top of that). Sends no credential and just asks "did any HTTP response
- * come back at all" within a short timeout. Returns `undefined` when the
- * check doesn't apply (mode "off" or endpoint not configured yet).
- */
-export async function checkHubEndpointReachable(cfg: AuditConfig): Promise<boolean | undefined> {
-  if (cfg.mode !== "hub" || !cfg.endpoint) return undefined;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
-  try {
-    await fetch(cfg.endpoint, { method: "GET", signal: controller.signal });
-    return true; // any response at all counts as "reachable" here
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export interface AllowlistedMetadata {
-  [key: string]: string | number | boolean | null;
-}
-
-/** Drop (never throw) any metadata key outside the action's own allowlist or
- * matching a sensitive-key pattern. Mirrors the Hub's own `drop` default
- * handling (RA_AUDIT_SENSITIVE_METADATA_HANDLING=drop). */
 export function sanitizeMetadata(
   metadata: AllowlistedMetadata,
   allowedKeys: readonly string[],
@@ -160,102 +143,310 @@ export function sanitizeMetadata(
   let count = 0;
   for (const [key, value] of Object.entries(metadata)) {
     if (count >= 16) break;
-    if (!allowedKeys.includes(key)) continue;
-    if (isSensitiveKey(key)) continue;
-    if (typeof value === "string" && value.length > 256) {
-      out[key] = value.slice(0, 256);
-    } else {
-      out[key] = value;
-    }
+    if (!allowedKeys.includes(key) || isSensitiveKey(key)) continue;
+    out[key] = typeof value === "string" && value.length > 256 ? value.slice(0, 256) : value;
     count++;
   }
   return out;
 }
 
-/** READ / invocation-only events: fail-open. Never blocks tool execution. */
+function actionFor(toolName: AuditToolName): AuditActionSpec {
+  return AUDIT_ACTIONS[toolName];
+}
+
+function isLoopbackHttp(url: string): boolean {
+  return (
+    url.startsWith("http://127.0.0.1") ||
+    url.startsWith("http://localhost") ||
+    url.startsWith("http://[::1]")
+  );
+}
+
+function validateEndpoint(cfg: AuditConfig): string {
+  if (!cfg.endpoint) throw new AuditHubClientError("RA_AUDIT_ENDPOINT not set for hub mode");
+  const endpoint = cfg.endpoint.replace(/\/$/, "");
+  const secure = endpoint.startsWith("https://");
+  const privateHttp = endpoint.startsWith("http://") && cfg.allowPrivateHttp;
+  if (!secure && !isLoopbackHttp(endpoint) && !privateHttp) {
+    throw new AuditHubClientError(
+      "plain HTTP Audit Hub URLs must use loopback unless RA_AUDIT_ALLOW_PRIVATE_HTTP=true",
+    );
+  }
+  return endpoint;
+}
+
+async function readCredential(cfg: AuditConfig): Promise<string> {
+  if (!cfg.credentialPath) {
+    throw new AuditHubClientError("RA_AUDIT_CREDENTIAL_PATH not set for hub mode");
+  }
+  try {
+    const credential = (await fs.readFile(cfg.credentialPath, "utf-8")).trim();
+    if (!credential) throw new AuditHubClientError("RA_AUDIT_CREDENTIAL_PATH is empty");
+    return credential;
+  } catch (error) {
+    if (error instanceof AuditHubClientError) throw error;
+    throw new AuditHubClientError("RA_AUDIT_CREDENTIAL_PATH could not be read", { cause: error });
+  }
+}
+
+async function hubFetch(
+  cfg: AuditConfig,
+  method: "GET" | "POST",
+  apiPath: string,
+  body?: Record<string, unknown>,
+  requestId?: string,
+): Promise<Record<string, unknown>> {
+  const baseUrl = validateEndpoint(cfg);
+  if (!cfg.serviceId) throw new AuditHubClientError("RA_AUDIT_SERVICE_ID not set for hub mode");
+  const credential = await readCredential(cfg);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}${apiPath}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          "X-RA-Service-Id": cfg.serviceId,
+          Accept: "application/json",
+          ...(body ? { "Content-Type": "application/json" } : {}),
+          ...(requestId ? { "X-RA-Request-Id": requestId } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new AuditHubUnavailable("audit hub unavailable", { cause: error });
+    }
+
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch {
+      value = { error: "invalid_response" };
+    }
+
+    if (!response.ok) {
+      const remoteError =
+        typeof value === "object" && value !== null && "error" in value
+          ? String((value as Record<string, unknown>).error)
+          : "request_failed";
+      if (response.status >= 500) throw new AuditHubUnavailable(remoteError);
+      throw new AuditHubClientError(remoteError);
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new AuditHubClientError("invalid Audit Hub response");
+    }
+    return value as Record<string, unknown>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Canonical unauthenticated liveness check. */
+export async function checkHubEndpointReachable(cfg: AuditConfig): Promise<boolean | undefined> {
+  if (cfg.mode !== "hub" || !cfg.endpoint) return undefined;
+  let baseUrl: string;
+  try {
+    baseUrl = validateEndpoint(cfg);
+  } catch {
+    return false;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch(`${baseUrl}/healthz`, { method: "GET", signal: controller.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Authenticated service health. In hub mode incomplete config and auth/profile
+ * failures are unhealthy, not "unknown".
+ */
+export async function checkHubServiceHealthy(cfg: AuditConfig): Promise<boolean | undefined> {
+  if (cfg.mode !== "hub") return undefined;
+  if (!cfg.endpoint || !cfg.serviceId || !cfg.credentialPath) return false;
+  try {
+    const health = await hubFetch(cfg, "GET", "/v1/service/health");
+    return health.status === "HEALTHY";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Non-critical invocation path. Only true Hub unavailability fails open.
+ * Contract/auth/profile errors propagate because silently accepting a broken
+ * audit integration would hide a deployment/configuration defect.
+ */
 export async function auditInvocation(
-  toolName: string,
+  toolName: AuditToolName,
   metadata: AllowlistedMetadata = {},
 ): Promise<void> {
   const cfg = loadAuditConfig();
   if (cfg.mode === "off") return;
+  const spec = actionFor(toolName);
   try {
-    await hubFetch(cfg, "POST", "/v1/events/invocation", {
-      tool: toolName,
-      protocol_version: cfg.protocolVersion,
-      metadata,
-    });
-  } catch {
-    // Reads/invocations degrade silently per policy (RA_AUDIT_POLICY=normal).
+    await hubFetch(
+      cfg,
+      "POST",
+      "/v1/events/invocation",
+      {
+        action: spec.action,
+        tool: toolName,
+        metadata: sanitizeMetadata(metadata, spec.allowedMetadataKeys),
+        result: "success",
+      },
+      randomUUID(),
+    );
+  } catch (error) {
+    if (error instanceof AuditHubUnavailable) return;
+    throw error;
   }
 }
 
 export interface CriticalWriteSpec {
-  action: string; // e.g. "file.upload.finalize"
-  classification: Classification;
-  allowedMetadataKeys: readonly string[];
+  toolName: AuditToolName;
   metadata?: AllowlistedMetadata;
 }
 
+export type AuditBusinessVerifier<T> = (result: T) => Promise<AllowlistedMetadata | void>;
+
+async function sendPhase(
+  cfg: AuditConfig,
+  correlationId: string,
+  phase: "APPLY" | "VERIFY" | "RESULT",
+  options: {
+    result?: "success" | "failure" | "denied" | "cancelled";
+    metadata?: AllowlistedMetadata;
+    errorCategory?: string;
+  } = {},
+): Promise<void> {
+  const body: Record<string, unknown> = { correlation_id: correlationId, phase };
+  if (options.result !== undefined) body.result = options.result;
+  if (options.metadata !== undefined) body.metadata = options.metadata;
+  if (options.errorCategory !== undefined) body.error_category = options.errorCategory;
+  await hubFetch(cfg, "POST", "/v1/events/phase", body, randomUUID());
+}
+
 /**
- * Write-ahead wrapper for critical mutations (ADR-004 fail-closed):
- *   begin -> durable INTENT -> ACK -> mutation() -> APPLY -> VERIFY -> RESULT
+ * Canonical critical lifecycle:
+ * durable INTENT -> business mutation -> APPLY -> postcondition -> VERIFY -> RESULT.
  *
- * In "off" mode this is a pure passthrough to `mutation()` — no Hub
- * dependency at all, per contract §3.1 ("at off: ... normal tool function
- * unchanged"). In "hub" mode, `mutation()` is only ever invoked after a
- * successful `intent_durable` ACK; any Hub failure before that ACK aborts
- * the whole operation without running `mutation()`.
+ * - INTENT/config failures occur before mutation and therefore fail closed.
+ * - Hub failure after mutation becomes AUDIT_INCOMPLETE.
+ * - A failed business postcondition records RESULT=failure and surfaces a
+ *   distinct BUSINESS_VERIFY_FAILED error so callers do not blindly retry.
  */
 export async function auditCriticalWrite<T>(
   spec: CriticalWriteSpec,
   mutation: () => Promise<T>,
+  verify?: AuditBusinessVerifier<T>,
 ): Promise<T> {
   const cfg = loadAuditConfig();
-  if (cfg.mode === "off") {
-    return mutation();
-  }
-  if (!CRITICAL_CLASSIFICATIONS.includes(spec.classification)) {
-    throw new Error(`classification ${spec.classification} is not a critical-write classification`);
-  }
-  const requestId = randomUUID();
-  const metadata = sanitizeMetadata(spec.metadata ?? {}, spec.allowedMetadataKeys);
+  if (cfg.mode === "off") return mutation();
 
-  const begin = (await hubFetch(
+  const action = actionFor(spec.toolName);
+  if (!action.writeAhead || !CRITICAL_CLASSIFICATIONS.includes(action.classification)) {
+    throw new AuditHubClientError(
+      `audit action ${action.action} is not configured as a critical write-ahead action`,
+    );
+  }
+
+  const metadata = sanitizeMetadata(spec.metadata ?? {}, action.allowedMetadataKeys);
+  const begin = await hubFetch(
     cfg,
     "POST",
     "/v1/events/begin",
-    { action: spec.action, classification: spec.classification, metadata, protocol_version: cfg.protocolVersion },
-    requestId,
-  )) as { status?: string };
+    {
+      action: action.action,
+      tool: spec.toolName,
+      metadata,
+    },
+    randomUUID(),
+  );
 
-  if (begin?.status !== "intent_durable") {
-    throw new Error(
-      `audit hub did not durably ack intent for ${spec.action} (fail-closed, mutation not executed)`,
+  if (
+    begin.status !== "intent_durable" ||
+    typeof begin.correlation_id !== "string" ||
+    !begin.correlation_id
+  ) {
+    throw new AuditHubUnavailable(
+      `durable INTENT was not acknowledged for ${action.action} (mutation not executed)`,
     );
   }
+  const correlationId = begin.correlation_id;
 
   let result: T;
   try {
     result = await mutation();
-  } catch (err) {
-    await hubFetch(cfg, "POST", "/v1/events/phase", {
-      request_id: requestId,
-      phase: "RESULT",
-      status: "failed",
-    }, requestId).catch(() => {});
-    throw err;
+  } catch (error) {
+    await sendPhase(cfg, correlationId, "RESULT", {
+      result: "failure",
+      errorCategory: "unexpected_error",
+    }).catch(() => {});
+    throw error;
   }
 
-  await hubFetch(cfg, "POST", "/v1/events/phase", { request_id: requestId, phase: "APPLY" }, requestId);
-  await hubFetch(cfg, "POST", "/v1/events/phase", { request_id: requestId, phase: "VERIFY" }, requestId);
-  await hubFetch(
-    cfg,
-    "POST",
-    "/v1/events/phase",
-    { request_id: requestId, phase: "RESULT", status: "success" },
-    requestId,
-  );
+  try {
+    await sendPhase(cfg, correlationId, "APPLY");
+  } catch (error) {
+    throw new AuditIncompleteError(action.action, "APPLY", result, error);
+  }
+
+  let verificationMetadata: AllowlistedMetadata = {};
+  if (verify) {
+    try {
+      verificationMetadata = sanitizeMetadata(
+        (await verify(result)) ?? {},
+        action.allowedMetadataKeys,
+      );
+    } catch (error) {
+      try {
+        await sendPhase(cfg, correlationId, "RESULT", {
+          result: "failure",
+          errorCategory: "validation_failed",
+        });
+      } catch (auditError) {
+        throw new AuditIncompleteError(
+          action.action,
+          "RESULT_AFTER_VERIFY_FAILURE",
+          result,
+          auditError,
+        );
+      }
+      throw new AuditBusinessVerificationError(action.action, result, error);
+    }
+  }
+
+  if (
+    action.allowedMetadataKeys.includes("verification_result") &&
+    verificationMetadata.verification_result === undefined
+  ) {
+    verificationMetadata.verification_result = "ok";
+  }
+
+  try {
+    await sendPhase(cfg, correlationId, "VERIFY", { metadata: verificationMetadata });
+  } catch (error) {
+    throw new AuditIncompleteError(action.action, "VERIFY", result, error);
+  }
+
+  try {
+    await sendPhase(cfg, correlationId, "RESULT", {
+      result: "success",
+      metadata: verificationMetadata,
+    });
+  } catch (error) {
+    throw new AuditIncompleteError(action.action, "RESULT", result, error);
+  }
 
   return result;
 }

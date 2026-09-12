@@ -24,8 +24,9 @@ export const FileIdField = z.string().regex(idPattern(ID_PREFIXES.file), "must b
 export const JobIdField = z.string().regex(idPattern(ID_PREFIXES.job), "must be a job_id previously returned by this server");
 export const UploadIdField = z.string().regex(idPattern(ID_PREFIXES.upload), "must be an upload_id previously returned by this server");
 export const DeleteTokenField = z.string().regex(idPattern(ID_PREFIXES.delete), "must be a delete_token previously returned by this server");
+export const Sha256Field = z.string().regex(/^[0-9a-f]{64}$/, "must be a lowercase 64-character hex SHA-256 digest");
 
-export const MimeCategorySchema = z.enum(["text", "pdf", "image", "archive", "unknown"]);
+export const MimeCategorySchema = z.enum(["text", "pdf", "image", "office", "archive", "unknown"]);
 
 // Wire shapes are deliberately snake_case throughout — matching every tool
 // *input* field (file_id, declared_size_bytes, processor_id, delete_token,
@@ -58,6 +59,8 @@ export const JobRecordSchema = z.object({
 
 export const CapabilitiesSchema = z.object({
   product_slug: z.string(),
+  product_version: z.string(),
+  state_schema_version: z.number().int().positive(),
   mcp_protocol_version: z.string(),
   package_profile: z.string(),
   audit_profile: z.string(),
@@ -101,6 +104,39 @@ export const FileVerifyResultSchema = FileRecordSchema.extend({
   matches: z.boolean(),
 });
 
+export const DuplicateCheckResultSchema = z.object({
+  sha256: z.string(),
+  duplicates: z.array(FileRecordSchema),
+});
+
+/** Exactly one of file_id/sha256 must be given — checking "does this file
+ * I already have have duplicates" (file_id) and "does this exact content
+ * already exist, e.g. before I even upload it" (sha256) are the two real
+ * use cases; giving both or neither has no well-defined meaning. */
+export const DuplicateCheckInputSchema = z
+  .object({ file_id: FileIdField.optional(), sha256: Sha256Field.optional() })
+  .refine((v) => (v.file_id ? !v.sha256 : !!v.sha256), { message: "provide exactly one of file_id or sha256" });
+
+export const KnowledgeHandoffResultSchema = z.object({
+  target: z.literal("knowledge"),
+  source: z.object({
+    file_id: z.string(),
+    sha256: z.string(),
+    mime_category: z.string(),
+    original_filename: z.string(),
+  }),
+  contribution: z.object({
+    topic: z.string().nullable(),
+    department: z.string().nullable(),
+    scope: z.string().nullable(),
+    answers: z.array(z.object({ question: z.string(), answer: z.string() })),
+    statements: z.array(z.object({ text: z.string() })),
+  }),
+  requires_user_input: z.array(z.string()),
+  warnings: z.array(z.string()),
+  ready: z.boolean(),
+});
+
 export const JobResultEnvelopeSchema = z.object({
   job_id: z.string(),
   result: z.record(z.string(), z.unknown()),
@@ -125,11 +161,19 @@ export const DownloadPrepareResultSchema = z.object({
 
 export const HealthSchema = z.object({
   health_profile: z.string(),
+  product_version: z.string(),
+  state_schema_version: z.number().int().positive(),
   status: z.enum(["ok", "degraded"]),
   control_plane_reachable: z.literal(true),
   data_plane_reachable: z.boolean(),
   staging_dir_writable: z.boolean(),
   files_dir_writable: z.boolean(),
+  processor_registry: z.object({ processor_count: z.number().int().nonnegative() }),
+  jobs: z.object({
+    prepared: z.number().int().nonnegative(),
+    completed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
   storage: z.object({
     file_count: z.number().int().nonnegative(),
     total_bytes: z.number().int().nonnegative(),
@@ -149,5 +193,6 @@ export const HealthSchema = z.object({
     service_id_configured: z.boolean().optional(),
     credential_path_configured: z.boolean().optional(),
     hub_endpoint_reachable: z.boolean().optional(),
+    hub_service_healthy: z.boolean().optional(),
   }),
 });
