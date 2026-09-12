@@ -10,7 +10,9 @@
     "check": "npm run typecheck && npm test",
     "build": "tsc",
     "start": "node dist/server.js",
-    "start:dataplane": "node dist/dataplane.js"
+    "start:dataplane": "node dist/dataplane.js",
+    "smoke:seed": "node scripts/runtime-smoke.mjs seed .runtime-smoke-state.json",
+    "smoke:verify": "node scripts/runtime-smoke.mjs verify .runtime-smoke-state.json"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",

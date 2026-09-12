@@ -128,13 +128,21 @@ test("sniffMimeCategory fails closed (archive) for a docx whose [Content_Types].
 
 // --- symlink refusal: assertNotSymlink is the last line of defense before any write/rename target ---
 
-test("assertNotSymlink refuses to proceed when a symlink already exists at the target path", async () => {
+test("assertNotSymlink refuses to proceed when a symlink already exists at the target path", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "raf-symlink-test-"));
   try {
     const realTarget = path.join(dir, "real-file");
     await fs.writeFile(realTarget, "not relevant");
     const symlinkPath = path.join(dir, "suspicious-symlink");
-    await fs.symlink(realTarget, symlinkPath);
+    try {
+      await fs.symlink(realTarget, symlinkPath);
+    } catch (err) {
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        t.skip("Windows account cannot create symlinks without Developer Mode/elevated privilege");
+        return;
+      }
+      throw err;
+    }
 
     await assert.rejects(() => assertNotSymlink(symlinkPath), /refusing to operate through a symlink/);
   } finally {

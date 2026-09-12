@@ -2,6 +2,55 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-12 ? Compiled-Runtime-Pfade, Windows-Lifecycle und echter Runtime-Smoke
+
+Bei der Abnahme des **kompilierten** Builds auf einem frischen Windows-Checkout
+wurde eine L?cke gefunden, die die bisherigen Source-/Unit-Tests nicht abgedeckt
+hatten: `store.ts` und `capabilities.ts` leiteten `data/` bzw. `package.json`
+?ber eine feste Anzahl `..`-Segmente von `import.meta.dirname` ab. Das stimmt
+im Source-Layout (`src/lib`) und im `tsx`-Betrieb, aber nicht mehr nach `tsc`
+unter `dist/src/lib`; der Produktionsprozess suchte dadurch unter `dist/data`
+bzw. `dist/package.json`.
+
+- Neuer zentraler Resolver `src/lib/runtimePaths.ts`: Produktroot wird anhand
+  des echten `package.json` mit `name: rheinagent-file-upload` nach oben
+  aufgel?st und funktioniert identisch aus Source- und `dist`-Layout.
+- Neue optionale Variable `RHEINAGENT_FILE_UPLOAD_DATA_DIR`. Ohne Override
+  bleibt `<product-root>/data` der Default; relative Overrides werden bewusst
+  gegen den Produktroot und nicht gegen `process.cwd()` aufgel?st. Compose
+  setzt explizit `/app/data`.
+- `PRODUCT_VERSION` liest `package.json` jetzt ?ber denselben Resolver.
+- SQLite-Lifecycle erg?nzt: `closeAllDatabases()`/`closeDatabase()` und
+  `closeStore()`. Control- und Data-Plane schlie?en bei `SIGINT`/`SIGTERM`
+  zuerst den HTTP-Server und anschlie?end ihre SQLite-Handles. Das ist
+  insbesondere f?r Windows-Upgrade/Rollback relevant, weil eine offene
+  SQLite-Datei dort nicht gel?scht/ersetzt werden kann.
+- Windows-Testportabilit?t korrigiert: SQLite-Tempdatenbanken werden vor
+  Cleanup geschlossen; der echte Symlink-Test wird nur dann ?bersprungen,
+  wenn der Windows-Account Symlink-Erzeugung mit `EPERM` verbietet. Linux-CI
+  f?hrt den Test weiterhin real aus.
+- Neuer `scripts/runtime-smoke.mjs` pr?ft den modernen MCP-HTTP-Pfad mit
+  echten Requests: Health, Capabilities, Upload/PUT/Finalize, Extraction,
+  Result, Duplicate-Erkennung, Knowledge-Handoff, Download und Verify. Eine
+  zweite Phase verifiziert dieselben Datei-/Job-/Result-Daten nach Neustart.
+- GitHub-CI-Job von reinem `docker build` auf `docker-runtime-smoke`
+  erweitert: Compose startet beide Container, f?hrt den vollen Smoke,
+  restartet beide Container und pr?ft danach die Persistenz im benannten
+  Volume. Dadurch wird genau die Source-vs.-`dist`-Klasse k?nftig automatisch
+  erkannt.
+
+**Lokal verifiziert (Windows, ohne laufenden Docker-Daemon):** `npm run check`
+= 159 Tests / 158 PASS / 1 SKIP (nur Symlink-Privilege) / 0 FAIL;
+`npm run build` PASS; `git diff --check` PASS. Der kompilierte
+`node dist/server.js` + `node dist/dataplane.js`-Flow lief mit separatem
+Temp-Data-Dir vollst?ndig durch, inklusive Prozessneustart und Persistenz von
+SQLite, Datei-Bytes, Job und Extraction-Result. `dist/data` wurde dabei nicht
+angelegt.
+
+**Noch offen in diesem Eintrag:** Der neue echte Compose-Runtime-Job muss nach
+dem Push auf GitHub gr?n laufen; der lokale Windows-Host hat weiterhin keinen
+laufenden Docker-Daemon. Audit-Hub-E2E bleibt ein separates Gate.
+
 ## 2026-09-11 — Versions-Bump `0.3.0`, README/HANDOFF auf aktuellen Stand
 
 Abschluss der mehrteiligen Ausbaurunde zum File-Intake-/Analyse-Layer

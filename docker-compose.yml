@@ -24,7 +24,9 @@ services:
     network_mode: host
     environment:
       RHEINAGENT_FILE_UPLOAD_BIND_HOST: "127.0.0.1"
+      RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST: "127.0.0.1"
       RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT: "3902"
+      RHEINAGENT_FILE_UPLOAD_DATA_DIR: "/app/data"
     volumes:
       - rheinagent-file-upload-data:/app/data
     depends_on:
@@ -48,6 +50,7 @@ services:
     network_mode: host
     environment:
       RHEINAGENT_FILE_UPLOAD_BIND_HOST: "127.0.0.1"
+      RHEINAGENT_FILE_UPLOAD_DATA_DIR: "/app/data"
     volumes:
       - rheinagent-file-upload-data:/app/data
     read_only: true

@@ -1,54 +1,55 @@
 # Handoff
 
-Stand: 2026-09-11. Dieses Dokument listet **alles**, was außerhalb von
+Stand: 2026-09-12. Dieses Dokument listet **alles**, was außerhalb von
 `Codeelchi/rheinagent-file-upload` erledigt werden muss, bevor dieses Produkt
 für echte Kunden nutzbar ist. Dieses Repo nimmt keine der folgenden Änderungen
 selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
 
-## Einstieg für eine neue Session
+## Einstieg fuer eine neue Session
 
-- Letzter Commit auf `claude/mcp-server-continuation-fb3oq2` (noch nicht
-  nach `main` gemerged — siehe `git log -1` für den tatsächlichen Stand;
-  dieser Hinweis nicht blind als aktuell voraussetzen): Arbeitsverzeichnis
-  sauber, jede Runde committed + gepusht.
+- Arbeitsbranch: `claude/mcp-server-continuation-fb3oq2`, PR #1 gegen `main`.
+  Den tatsaechlichen Git-/PR-/CI-Stand immer zuerst erneut pruefen; keine hier
+  genannte SHA blind voraussetzen.
 - Server starten: `npm run serve` (Control Plane, Port 3901) **und**
-  `npm run serve:dataplane` (Data Plane, Port 3902) — beide nötig für
-  Uploads/Downloads. `npm run check` bündelt Typecheck + Tests (= das
-  Release-Gate aus [VERSIONING.md](VERSIONING.md)) in einem Befehl. Für
-  Produktionsbetrieb: `npm run build` + `npm run start`/`start:dataplane`
-  (reines `node`, kein `tsx`/`typescript` zur Laufzeit) oder
-  `docker compose up --build` (siehe [INSTALLATION.md](INSTALLATION.md) —
-  **Docker/Compose selbst noch nicht gegen einen echten Docker-Daemon
-  verifiziert**, siehe unten).
-- Arbeits-Workflow für dieses Repo: jede Änderungsrunde endet mit einem
-  `BUILDLOG.md`-Eintrag + Push nach `github.com/Codeelchi/rheinagent-file-upload`,
-  ohne dass der Nutzer danach fragen muss.
-- **Wichtigster nächster fachlicher Schritt (unverändert seit mehreren
-  Runden):** Audit-Hub-Live-Verifikation (`src/lib/audit.ts` ist nur gegen
-  die Dokumentation implementiert, nie gegen eine laufende
-  `rheinagent-audit`-Instanz getestet) — siehe Abschnitt "Offene
-  Cross-Repo-Integrationsarbeit" Punkt 4 unten. Bisher hatte keine Session
-  Zugriff auf eine laufende Hub-Instanz und hat stattdessen den jeweils
-  nächsten unblockierten, reinen In-Repo-Punkt erledigt.
-- Vollständiger aktueller Funktionsstand (2026-09-11, mehrteiliger Ausbau
-  zum "File Intake & Analysis Layer"): **18 Tools**, **11 Processor**
-  (Text/Markdown/CSV/JSON/PDF/Image/DOCX/XLSX), **155 automatisierte
-  Tests**, `npm run check` fehlerfrei. SQLite-Metadatenpersistenz (statt
-  JSON), Chunking für lange Dokumente, Duplikat-Erkennung, ein
-  nicht-autoritativer Knowledge-Handoff-Contract, Docker/Compose-Setup
-  (Build lokal verifiziert, echter `docker build`/`compose up` nur über
-  den neuen CI-Job abgedeckt), erweitertes Health/Doctor
-  (`product_version`/`state_schema_version`/Job-Stats). Details je Runde:
-  `BUILDLOG.md` (neuester Eintrag oben) — dort auch, was jeweils **live
-  end-to-end verifiziert** wurde vs. nur implementiert.
-- **Bewusst nicht umgesetzt in diesem Ausbau** (ehrlich benannt, nicht als
-  erledigt behauptet): echter `docker build`/`docker compose up` gegen
-  einen laufenden Daemon (kein Daemon in dieser Session verfügbar); eine
-  Cursor-Paginierung für `csv_inspect`/`xlsx_inspect` über die aktuelle
-  20-Zeilen-Stichprobe hinaus; ein generischer Entpack-Processor für
-  beliebige Archive (nur `.docx`/`.xlsx` als eng zugeschnittene Ausnahme,
-  siehe [SECURITY.md](SECURITY.md)); MCP-App-UI (siehe unten, weiterhin
-  bewusst zurückgestellt); jede Cross-Repo-Integration (siehe unten).
+  `npm run serve:dataplane` (Data Plane, Port 3902). Produktionsbuild:
+  `npm run build` + `npm run start`/`start:dataplane`. Docker/Compose siehe
+  [INSTALLATION.md](INSTALLATION.md).
+- `npm run check` ist das lokale Release-Gate. Stand 2026-09-12 auf dem
+  Windows-Testhost: **159 Tests, 158 PASS, 1 SKIP, 0 FAIL**. Der einzige Skip
+  ist der echte Symlink-Erzeugungstest, wenn der Windows-Account Symlinks mit
+  `EPERM` verbietet; Linux-CI fuehrt ihn real aus. `npm run build` und
+  `git diff --check` sind ebenfalls PASS.
+- Funktionsstand: **18 oeffentliche Tools, 11 Processor** fuer
+  Text/Markdown/CSV/JSON/PDF/Image/DOCX/XLSX; SQLite/WAL-Persistenz, Chunking,
+  Duplikat-Erkennung, nicht-autoritatives Knowledge-Handoff, Health/Doctor,
+  Docker/Compose sowie Control-/Data-Plane-Trennung.
+- Am 2026-09-12 wurde bei einem echten **kompilierten** Runtime-Test ein
+  Source-vs.-`dist`-Pfadfehler entdeckt: feste `import.meta.dirname/../..`-
+  Annahmen zeigten nach `tsc` auf `dist/`. Behoben durch
+  `src/lib/runtimePaths.ts`; `RHEINAGENT_FILE_UPLOAD_DATA_DIR` erlaubt einen
+  expliziten Data-Root. `PRODUCT_VERSION` nutzt denselben Root-Resolver.
+- Control- und Data-Plane haben jetzt Graceful Shutdown fuer `SIGINT`/`SIGTERM`
+  und schliessen SQLite-Handles kontrolliert. Das ist insbesondere fuer
+  Windows-Update/Rollback relevant.
+- Der kompilierte Vollflow wurde lokal live verifiziert:
+  Upload->Finalize->Extraction->Result->Duplicate->Knowledge-Handoff->Download->
+  Verify, danach Neustart beider Prozesse und erneute Pruefung von Datei,
+  SQLite, Job und Result. Persistenz: PASS. `dist/data` wurde nicht angelegt.
+- Die bisherige GitHub-CI mit reinem `docker build` wurde durch
+  `docker-runtime-smoke` ersetzt: echter `docker compose up -d --build`,
+  beide Planes live, voller MCP+Data-Plane-Flow, Container-Restart und
+  Persistenzpruefung. Der lokale Windows-Testhost hat **keinen** laufenden
+  Docker-Daemon; deshalb ist der GitHub-Job die autoritative Container-Abnahme.
+- **Wichtigstes danach verbleibendes technisches Gate:** Live-Verifikation des
+  Audit-Hub-Write-Ahead-Vertrags fuer `rheinagent-file-upload@1` gegen den
+  aktuellen `rheinagent-audit`-Stand. Danach erst zentrale
+  License/Manager/Update-Feed-Registrierung.
+- Jede Arbeitsrunde endet mit aktuellem `BUILDLOG.md`/Handoff, sauberem Commit
+  und Push auf den Arbeitsbranch. Keine Cross-Repo-Integration als erledigt
+  markieren, bevor sie tatsaechlich live/CI-verifiziert wurde.
+- Bewusst weiterhin nicht umgesetzt: MCP-App-UI, generischer Archiv-Entpacker,
+  Cursor-Paginierung ueber die feste CSV/XLSX-Stichprobe hinaus, echte
+  Mandanten-/Nutzertrennung und ein allgemeines SQLite-Schema-Migrationsframework.
 
 ## Verbindlicher License-/Distribution-Flow (Referenz)
 
@@ -116,10 +117,12 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
 
 ## Innerhalb dieses Repos noch offen (nicht Cross-Repo, aber unerledigt)
 
-- **Docker/Compose noch nicht gegen einen echten Daemon verifiziert** —
-  siehe [INSTALLATION.md](INSTALLATION.md). Nächster Schritt: einmal
-  `docker compose up --build` fahren und den vollen
-  Upload→Process→Download-Flow durchspielen.
+- **Docker/Compose-Runtime-Gate:** Der fruehere reine Build-Smoke ist durch
+  `docker-runtime-smoke` ersetzt. Er startet beide Container, faehrt
+  Upload->Extraction->Duplicate->Knowledge-Handoff->Download, restartet beide
+  Services und prueft anschliessend SQLite-/Datei-/Job-/Result-Persistenz. Der
+  GitHub-Lauf ist die autoritative Container-Abnahme, da der lokale
+  Windows-Testhost keinen Docker-Daemon hat.
 - **Keine MCP-App-UI** für die aktuelle Tool-Menge (der frühere Prototyp mit
   anderen Tool-Namen wurde entfernt, siehe [BUILDLOG.md](../BUILDLOG.md)).
   UI ist laut Vorgabe optional — Business-Funktionen sind vollständig ohne
@@ -307,8 +310,8 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
   Auf Nutzerwunsch vor dem CI-Workflow priorisiert (siehe oben).
 - **Download-Endpunkt für große/binäre Dateien.** Neues Tool
   `rheinagent_file_download_prepare` (Control Plane) legt ein befristetes,
-  wiederverwendbares `download_token` an (`data/meta/downloads.json`,
-  15 min TTL, analog zu `PendingUpload`); `GET /download/:downloadToken`
+  wiederverwendbares `download_token` in der `downloads`-Tabelle von
+  `data/meta/state.sqlite` an (15 min TTL, analog zu `PendingUpload`); `GET /download/:downloadToken`
   auf der Data Plane streamt die Bytes mit `Content-Disposition: attachment`.
   Verweigert Downloads für unbekannte/abgelaufene Token (`404`) und für
   bereits gelöschte/`pendingDelete`-Dateien (`410`/Prepare-Fehler). Live

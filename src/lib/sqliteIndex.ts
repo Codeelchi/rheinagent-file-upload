@@ -117,13 +117,30 @@ export async function migrateJsonFileIfPresent<T>(jsonFilePath: string, sqliteIn
   return { migrated: entries.length };
 }
 
-/** Test-only: drops every cached connection so a fresh `new SqliteIndex()`
- * in the next test reopens the (possibly newly created temp) file instead
- * of reusing a stale handle from an earlier test's now-deleted temp dir. */
-export function _closeAllForTests(): void {
+/** Closes every cached SQLite handle in this process.
+ *
+ * Production callers use this during graceful shutdown so Windows services
+ * can release the database file cleanly before an upgrade/rollback replaces
+ * or snapshots the data directory. Tests use the same lifecycle hook before
+ * deleting temporary directories (Windows refuses to unlink an open SQLite
+ * file, unlike Linux). Do not call this while normal store operations are
+ * still in flight. */
+export function closeAllDatabases(): void {
   for (const db of openDatabases.values()) db.close();
   openDatabases.clear();
 }
+
+/** Closes one cached database path; useful for isolated temp-db tests. */
+export function closeDatabase(filePath: string): boolean {
+  const db = openDatabases.get(filePath);
+  if (!db) return false;
+  db.close();
+  openDatabases.delete(filePath);
+  return true;
+}
+
+/** Backwards-compatible test helper retained for existing imports. */
+export const _closeAllForTests = closeAllDatabases;
 
 /** Absolute path helper so callers don't hand-assemble `path.join`s that
  * drift from where this module actually expects the legacy file to be. */

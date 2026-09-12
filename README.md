@@ -66,6 +66,10 @@ docker compose up --build
 ```
 
 Details zu Konfiguration, Audit-Opt-in und Betrieb: [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Persistente Daten liegen standardm??ig unter `<product-root>/data`; f?r Service-/
+Container-Installationen kann `RHEINAGENT_FILE_UPLOAD_DATA_DIR` gesetzt werden.
+Der CI-Runtime-Smoke startet beide Container, f?hrt einen echten MCP+Data-Plane-
+Flow und verifiziert die Persistenz nach Container-Restart.
 
 ## Öffentliche MCP-Tools (18)
 

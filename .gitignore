@@ -5,3 +5,4 @@ data/
 .env
 *.key
 *.crt
+.runtime-smoke-state.json

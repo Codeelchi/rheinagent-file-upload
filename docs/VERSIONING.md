@@ -85,7 +85,12 @@ Haupt-DB-Datei plus WAL-/SHM-Sidecar-Dateien, siehe
 [STATE-MIGRATION.md](STATE-MIGRATION.md) — und `data/files/**`),
 und `protected_paths` dürfen von einem Update nicht überschrieben werden.
 Diese Felder sind oben als Zielstruktur benannt, aber noch nicht gegen einen
-echten Manager-Update-Lauf verifiziert.
+echten Manager-Update-Lauf verifiziert. Der laufende Dienst kann den physischen
+Data-Root ?ber `RHEINAGENT_FILE_UPLOAD_DATA_DIR` verlagern; ein sp?teres
+Manager-Package muss diesen tats?chlichen Installationspfad auf die logischen
+`data/...`-Protected-/Persistent-Globs abbilden. Vor Update/Rollback senden die
+Prozesse auf `SIGTERM` einen kontrollierten HTTP-Shutdown und schlie?en ihre
+SQLite-Handles.
 
 ## Health/Doctor-Konzept
 
@@ -121,6 +126,7 @@ hier, bevor es gemacht wird.
 Vor jedem Release-Tag:
 
 - [ ] `npm run check` fehlerfrei (= `tsc --noEmit` + alle automatisierten Tests unter `test/`)
+- [ ] GitHub-CI `docker-runtime-smoke` gr?n: echter Compose-Start beider Planes, Upload/Extraction/Duplicate/Knowledge-Handoff/Download und Persistenzpr?fung nach Container-Restart
 - [ ] Manuelle End-to-End-Probe aller 18 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
       für das zuletzt dokumentierte Ergebnis) — automatisierte Tests ersetzen
       das noch nicht vollständig, siehe [HANDOFF.md](HANDOFF.md) zum aktuellen

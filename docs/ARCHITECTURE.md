@@ -45,16 +45,18 @@ Fehlfunktion.
                     staging/  files/  results/  meta/state.sqlite
 ```
 
-Beide Prozesse sind **getrennt**, weil große Binärdaten nie durch MCP-JSON
+Beide Prozesse sind **getrennt**, weil grosse Binaerdaten nie durch MCP-JSON
 laufen sollen: der Control-Plane-Prozess kennt nur `upload_id`/`file_id`/
-`job_id`, nie rohe Bytes im Request/Response-Pfad (außer dem Sonderfall
+`job_id`, nie rohe Bytes im Request/Response-Pfad (ausser dem Sonderfall
 kleiner Text-Inhalte in `rheinagent_file_get`, siehe unten). Beide Prozesse
-teilen sich ausschließlich das Dateisystem unter `data/`, nicht den
-Prozessspeicher — Metadaten liegen seit 2026-09-11 in einer gemeinsamen
-SQLite-Datenbank (`data/meta/state.sqlite`, WAL-Modus, `src/lib/sqliteIndex.ts`),
-vorher in einzelnen JSON-Dateien. Jeder Tabellenzugriff geht direkt gegen
-diese Datei, kein In-Memory-Cache in keinem der beiden Prozesse — siehe
-[STATE-MIGRATION.md](STATE-MIGRATION.md) für die Migrationsbegründung.
+teilen sich ausschliesslich einen gemeinsamen Data-Root, nicht den
+Prozessspeicher. Standard ist `<product-root>/data`;
+`RHEINAGENT_FILE_UPLOAD_DATA_DIR` kann fuer Service-/Container-Installationen
+einen expliziten Pfad setzen. `src/lib/runtimePaths.ts` ermittelt den
+Produktroot unabhaengig davon, ob Module aus `src/lib` oder nach `tsc` aus
+`dist/src/lib` laufen. Metadaten liegen in `data/meta/state.sqlite` (WAL-Modus,
+`src/lib/sqliteIndex.ts`). Jeder Tabellenzugriff geht direkt gegen diese Datei,
+ohne Record-Cache. Siehe [STATE-MIGRATION.md](STATE-MIGRATION.md).
 
 Beide Prozesse binden standardmäßig ausschließlich an `127.0.0.1`
 (`RHEINAGENT_FILE_UPLOAD_BIND_HOST`, Default `127.0.0.1`) — da diese Version
@@ -62,6 +64,16 @@ keinerlei TLS/Auth auf HTTP-Ebene hat (siehe [SECURITY.md](SECURITY.md)),
 würde ein Default von `0.0.0.0` das Produkt sonst ungeschützt im
 LAN/Tailnet erreichbar machen. Ein Betrieb hinter einem Reverse Proxy oder
 mit anderer Zugriffskontrolle kann den Host explizit überschreiben.
+
+## Graceful Shutdown und SQLite-Lifecycle
+
+Beide Prozesse behandeln `SIGINT` und `SIGTERM` als kontrollierten Shutdown:
+zuerst nimmt der jeweilige HTTP-Server keine neuen Verbindungen mehr an, danach
+werden die pro Prozess gecachten SQLite-Handles geschlossen. Nach 10 Sekunden
+greift ein Fail-safe-Exit. Das ist insbesondere unter Windows relevant, weil
+ein offener SQLite-Handle die Datei fuer Upgrade/Rollback oder Test-Cleanup
+blockiert. Der CI-Runtime-Smoke restartet beide Container und prueft danach die
+Persistenz von SQLite, Datei-Bytes, Job und Ergebnis.
 
 ## Identität/Autorisierung
 
@@ -109,8 +121,8 @@ Für alles, was nicht als kleine Textdatei inline über `rheinagent_file_get`
 geht (große Dateien, PDFs, Bilder), gilt derselbe Trennungsgrundsatz wie
 beim Upload: Bytes laufen nie durch MCP-JSON. `rheinagent_file_download_prepare`
 prüft, dass die Datei existiert und nicht `pendingDelete` ist, und legt ein
-befristetes (15 min), wiederverwendbares `download_token` an (`data/meta/downloads.json`,
-Muster analog zu `PendingUpload`). Die Data Plane bedient `GET
+befristetes (15 min), wiederverwendbares `download_token` in der `downloads`-
+Tabelle von `data/meta/state.sqlite` an (Muster analog zu `PendingUpload`). Die Data Plane bedient `GET
 /download/:downloadToken`, löst das Token gegen `fileId` auf, liest die
 Datei ausschließlich über `filePath()` (also nur opake, bereits validierte
 Pfade unter `data/files/`) und streamt sie mit `Content-Disposition:

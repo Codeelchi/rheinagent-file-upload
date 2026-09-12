@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { SqliteIndex, migrateJsonFileIfPresent } from "../src/lib/sqliteIndex.js";
+import { SqliteIndex, migrateJsonFileIfPresent, closeDatabase } from "../src/lib/sqliteIndex.js";
 
 // The persistence layer every store.ts table sits on top of, replacing the
 // old whole-file JsonIndex (see docs/STATE-MIGRATION.md). Same behavioral
@@ -22,6 +22,7 @@ async function withTempDbFile(fn: (filePath: string) => Promise<void>): Promise<
   try {
     await fn(filePath);
   } finally {
+    closeDatabase(filePath);
     await fs.rm(dir, { recursive: true, force: true });
   }
 }

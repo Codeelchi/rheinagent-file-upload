@@ -27,6 +27,7 @@ import {
   verifyFile,
   filePath,
   findFilesBySha256,
+  closeStore,
 } from "../src/lib/store.js";
 import { sha256Hex, type MimeCategory } from "../src/lib/security.js";
 
@@ -387,5 +388,6 @@ test("findFilesBySha256 returns an empty array for content nothing else shares",
 });
 
 test.after(async () => {
+  closeStore();
   await fs.rm(DATA_DIR, { recursive: true, force: true });
 });

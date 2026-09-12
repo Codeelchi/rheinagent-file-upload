@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { SqliteIndex, migrateJsonFileIfPresent, legacyJsonPathFor } from "./sqliteIndex.js";
+import { SqliteIndex, migrateJsonFileIfPresent, legacyJsonPathFor, closeAllDatabases } from "./sqliteIndex.js";
 import { newUploadId, newFileId, newDeleteToken, newDownloadToken, newJobId, assertOpaqueId } from "./ids.js";
 import { safeJoin, assertNotSymlink, classifyExtension, sha256Hex, type MimeCategory } from "./security.js";
+import { DATA_DIR } from "./runtimePaths.js";
 
-const DATA_DIR = path.join(import.meta.dirname, "..", "..", "data");
 const STAGING_DIR = path.join(DATA_DIR, "staging");
 const FILES_DIR = path.join(DATA_DIR, "files");
 const RESULTS_DIR = path.join(DATA_DIR, "results");
@@ -516,4 +516,9 @@ export async function readJobResult(jobId: string): Promise<unknown | undefined>
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
   }
+}
+
+/** Closes cached SQLite handles during graceful process shutdown/tests. */
+export function closeStore(): void {
+  closeAllDatabases();
 }

@@ -8,6 +8,7 @@
 | `RHEINAGENT_FILE_UPLOAD_DATAPLANE_PORT` | `3902` | Port der Data Plane; muss mit dem tatsächlich gestarteten `dataplane.ts`-Port übereinstimmen |
 | `RHEINAGENT_FILE_UPLOAD_DATAPLANE_HOST` | `localhost` | Hostname, über den die Control Plane die Data Plane erreicht (intern für `health_get` **und** für die an den Client zurückgegebenen `upload_url`/`download_url`) — nur ändern, wenn beide Prozesse tatsächlich nicht über `localhost` erreichbar sind (siehe `docker-compose.yml`, das stattdessen `network_mode: host` nutzt, damit `localhost` in beiden Containern weiterhin dasselbe bedeutet) |
 | `RHEINAGENT_FILE_UPLOAD_BIND_HOST` | `127.0.0.1` | Bind-Host für **beide** Prozesse. Diese Version hat kein TLS/Auth auf HTTP-Ebene (siehe [SECURITY.md](SECURITY.md)) — nur explizit auf `0.0.0.0` o.ä. ändern, wenn ein Reverse Proxy/andere Zugriffskontrolle davorsteht |
+| `RHEINAGENT_FILE_UPLOAD_DATA_DIR` | `<product-root>/data` | Persistentes gemeinsames Datenverzeichnis f?r beide Prozesse. Absolute Pfade werden direkt genutzt; relative Werte werden gegen den ermittelten Produktroot aufgel?st, nicht gegen `process.cwd()`. Compose setzt explizit `/app/data`. |
 | `RA_AUDIT_MODE` | `off` | `off` oder `hub` — siehe [AUDIT.md](AUDIT.md) |
 | `RA_AUDIT_ENDPOINT` | — | nur bei `hub` erforderlich |
 | `RA_AUDIT_SERVICE_ID` | — | nur bei `hub` erforderlich |
@@ -26,9 +27,12 @@ npm run serve             # Control Plane
 npm run serve:dataplane   # Data Plane, separat
 ```
 
-Beide schreiben/lesen `data/` relativ zum Projektverzeichnis
-(`staging/`, `files/`, `results/`, `meta/*.json`) — per `.gitignore`
-ausgeschlossen, nie Teil eines Commits.
+Beide schreiben/lesen standardm??ig `<product-root>/data`
+(`staging/`, `files/`, `results/`, `meta/state.sqlite*`) ? per `.gitignore`
+ausgeschlossen, nie Teil eines Commits. `src/lib/runtimePaths.ts` ermittelt
+den Produktroot so, dass Source-Betrieb (`tsx`) und kompilierter
+`dist/src/lib`-Betrieb denselben Pfad verwenden. F?r Service-/Container-
+Installationen kann `RHEINAGENT_FILE_UPLOAD_DATA_DIR` explizit gesetzt werden.
 
 ## Audit-Opt-in
 
@@ -77,16 +81,18 @@ Docker/Compose ist bereits der Prozessmanager, ein zusätzlicher Supervisor
 wäre unnötige Komplexität und eigene Angriffsfläche für ein Produkt, dessen
 Architektur ohnehin zwei getrennte Prozesse vorsieht.
 
-**Verifikationsstand**: `docker build`/`docker compose up` **nicht** gegen
-einen echten Docker-Daemon getestet — diese Session hatte nur den
-`docker`-CLI-Client, keinen laufenden Daemon zur Verfügung
-(`docker compose config` validiert die Compose-Datei syntaktisch fehlerfrei,
-das ist alles, was ohne Daemon möglich war). Der kompilierte Build selbst
-(`npm run build` → `node dist/server.js`/`node dist/dataplane.js`) wurde
-außerhalb von Docker live verifiziert (Control Plane startet, beantwortet
-`/mcp`). **Vor Produktivbetrieb**: einmal `docker compose up --build` gegen
-einen echten Daemon fahren und den vollen Upload→Process→Download-Flow
-durchspielen — das ist noch offen.
+**Verifikationsstand 2026-09-12**: Der lokale Windows-Testhost hat weiterhin
+keinen laufenden Docker-Daemon. Der kompilierte Produktionsbuild wurde dort
+aber vollst?ndig live gegen beide `dist`-Prozesse gepr?ft, inklusive
+Upload?Extraction?Duplicate?Knowledge-Handoff?Download und anschlie?endem
+Prozessneustart mit erfolgreicher SQLite-/Datei-/Job-/Result-Persistenz. Dabei
+wurde ein realer Source-vs.-`dist`-Pfadfehler entdeckt und behoben.
+
+Die GitHub-CI enth?lt deshalb jetzt `docker-runtime-smoke`:
+`docker compose up -d --build`, Liveness beider Planes, derselbe volle
+Runtime-Flow, `docker compose restart` und anschlie?ende Persistenzpr?fung.
+Erst ein gr?ner Lauf dieses Jobs gilt als echte Container-/Compose-Abnahme;
+`docker build` allein reicht ausdr?cklich nicht mehr.
 
 ## Doctor / Health
 

@@ -43,6 +43,7 @@ import {
   verifyFile,
   findFilesBySha256,
   getJobStats,
+  closeStore,
 } from "./src/lib/store.js";
 import { buildKnowledgeHandoffProposal } from "./src/lib/knowledgeHandoff.js";
 import { classifyExtension, sniffMimeCategory, sha256Hex, MAX_UPLOAD_BYTES } from "./src/lib/security.js";
@@ -773,6 +774,22 @@ setInterval(() => {
   runStagingSweep().catch((err) => logger.error("staging sweep failed", { message: String(err) }));
 }, STAGING_SWEEP_INTERVAL_MS).unref();
 
-expressApp.listen(PORT, BIND_HOST, () => {
+const httpServer = expressApp.listen(PORT, BIND_HOST, () => {
   console.log(`Control plane listening on http://${BIND_HOST}:${PORT}/mcp`);
 });
+
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.notice("shutdown requested", { signal });
+  const forceTimer = setTimeout(() => process.exit(1), 10_000);
+  forceTimer.unref();
+  httpServer.close(() => {
+    closeStore();
+    clearTimeout(forceTimer);
+    process.exit(0);
+  });
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

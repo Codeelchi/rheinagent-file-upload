@@ -1,9 +1,8 @@
-import fs from "node:fs";
-import path from "node:path";
 import { MAX_UPLOAD_BYTES } from "./security.js";
 import { listProcessorsWithCategories } from "./processors.js";
 import { loadAuditConfig } from "./audit.js";
 import { WINDOW_MS, LIMITS } from "./rateLimit.js";
+import { readProductVersion } from "./runtimePaths.js";
 
 export const PRODUCT_SLUG = "rheinagent-file-upload";
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
@@ -17,9 +16,7 @@ export const HEALTH_PROFILE = "rheinagent-file-upload-v1";
  * canonical source, per docs/VERSIONING.md, instead of yet another copy
  * that can silently drift out of sync with it.
  */
-export const PRODUCT_VERSION: string = JSON.parse(
-  fs.readFileSync(path.join(import.meta.dirname, "..", "..", "package.json"), "utf-8"),
-).version;
+export const PRODUCT_VERSION: string = readProductVersion();
 
 /**
  * `FileRecord`/`JobRecord`/`PendingUpload`/`DeleteTicket`/`DownloadTicket`
