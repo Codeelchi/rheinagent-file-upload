@@ -18,6 +18,7 @@ RUN addgroup -S rheinagent && adduser -S rheinagent -G rheinagent
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY audit ./audit
 # data/ is the only writable path (see RHEINAGENT_FILE_UPLOAD_* env vars in
 # docs/INSTALLATION.md) — created here so the non-root user owns it before
 # a volume is mounted over it; --read-only at `docker run`/compose level

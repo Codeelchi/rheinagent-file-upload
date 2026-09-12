@@ -14,6 +14,7 @@
 | `RA_AUDIT_SERVICE_ID` | — | nur bei `hub` erforderlich |
 | `RA_AUDIT_CREDENTIAL_PATH` | — | nur bei `hub` erforderlich, Pfad zu einer Datei mit dem Service-Credential |
 | `RA_AUDIT_PROTOCOL_VERSION` | `rheinagent-audit/1` | selten zu ändern |
+| `RA_AUDIT_ALLOW_PRIVATE_HTTP` | `false` | nur bewusst für geschützten Nicht-Loopback-HTTP-Transport auf `true` setzen; HTTPS/Loopback benötigen das Opt-in nicht |
 
 Die Control Plane (`server.ts`, Port 3901) und die Data Plane
 (`dataplane.ts`, Port 3902) sind zwei separate Prozesse — beide müssen

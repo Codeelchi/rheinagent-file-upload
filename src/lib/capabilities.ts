@@ -1,13 +1,13 @@
 import { MAX_UPLOAD_BYTES } from "./security.js";
 import { listProcessorsWithCategories } from "./processors.js";
-import { loadAuditConfig } from "./audit.js";
+import { AUDIT_PROFILE_ID, loadAuditConfig } from "./audit.js";
 import { WINDOW_MS, LIMITS } from "./rateLimit.js";
 import { readProductVersion } from "./runtimePaths.js";
 
 export const PRODUCT_SLUG = "rheinagent-file-upload";
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 export const PACKAGE_PROFILE = "rheinagent-file-upload@1";
-export const AUDIT_PROFILE = "rheinagent-file-upload@1";
+export const AUDIT_PROFILE = AUDIT_PROFILE_ID;
 export const HEALTH_PROFILE = "rheinagent-file-upload-v1";
 
 /**

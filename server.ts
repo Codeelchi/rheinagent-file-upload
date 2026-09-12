@@ -15,7 +15,15 @@ import fs from "node:fs/promises";
 import { z } from "zod";
 
 import { getCapabilities, HEALTH_PROFILE, USAGE_STEPS, PRODUCT_VERSION, STATE_SCHEMA_VERSION } from "./src/lib/capabilities.js";
-import { auditInvocation, auditCriticalWrite, loadAuditConfig, checkHubEndpointReachable } from "./src/lib/audit.js";
+import {
+  auditInvocation,
+  auditCriticalWrite,
+  loadAuditConfig,
+  checkHubEndpointReachable,
+  checkHubServiceHealthy,
+  AuditIncompleteError,
+  AuditBusinessVerificationError,
+} from "./src/lib/audit.js";
 import {
   ensureDirs,
   createPendingUpload,
@@ -149,7 +157,7 @@ function registerTools(server: McpServer): void {
     {
       title: "Health / doctor check",
       description:
-        "Checks control/data-plane reachability, staging/files directory writability, current storage usage (file count, total bytes, staged-file count, breakdown by mime_category), and (if audit_mode=hub) audit config completeness and best-effort Hub network reachability. Never returns file contents, hashes, or audit credentials.",
+        "Checks control/data-plane reachability, storage writability/usage and, in audit hub mode, config completeness plus both Hub liveness and authenticated service health. Never returns file contents, hashes, or audit credentials.",
       inputSchema: z.object({}),
       outputSchema: HealthSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -170,18 +178,31 @@ function registerTools(server: McpServer): void {
 
       const auditCfg = loadAuditConfig();
       const audit: Record<string, unknown> = { mode: auditCfg.mode };
+      let auditHealthy = true;
       if (auditCfg.mode === "hub") {
-        audit.endpoint_configured = Boolean(auditCfg.endpoint);
-        audit.service_id_configured = Boolean(auditCfg.serviceId);
-        audit.credential_path_configured = Boolean(auditCfg.credentialPath);
-        audit.hub_endpoint_reachable = await checkHubEndpointReachable(auditCfg);
+        const endpointConfigured = Boolean(auditCfg.endpoint);
+        const serviceIdConfigured = Boolean(auditCfg.serviceId);
+        const credentialPathConfigured = Boolean(auditCfg.credentialPath);
+        const hubEndpointReachable = await checkHubEndpointReachable(auditCfg);
+        const hubServiceHealthy = await checkHubServiceHealthy(auditCfg);
+        audit.endpoint_configured = endpointConfigured;
+        audit.service_id_configured = serviceIdConfigured;
+        audit.credential_path_configured = credentialPathConfigured;
+        audit.hub_endpoint_reachable = hubEndpointReachable;
+        audit.hub_service_healthy = hubServiceHealthy;
+        auditHealthy =
+          endpointConfigured &&
+          serviceIdConfigured &&
+          credentialPathConfigured &&
+          hubEndpointReachable === true &&
+          hubServiceHealthy === true;
       }
 
       const healthy =
         dataPlaneReachable &&
         stagingWritable &&
         filesWritable &&
-        (auditCfg.mode === "off" || audit.hub_endpoint_reachable !== false);
+        auditHealthy;
 
       const body = {
         health_profile: HEALTH_PROFILE,
@@ -202,7 +223,11 @@ function registerTools(server: McpServer): void {
         },
         audit,
       };
-      await auditInvocation("rheinagent_file_health_get", { status: body.status });
+      // If doctor already found broken Hub configuration/auth, return the
+      // degraded report instead of hiding it behind its own audit call.
+      if (auditCfg.mode === "off" || auditHealthy) {
+        await auditInvocation("rheinagent_file_health_get", { status: body.status });
+      }
       return {
         content: [{ type: "text", text: `status: ${body.status}` }],
         structuredContent: body,
@@ -270,7 +295,7 @@ function registerTools(server: McpServer): void {
         await fs.unlink(staged).catch(() => {});
         await consumePendingUpload(upload_id);
         return {
-          content: [{ type: "text", text: `rejected: declared extension category "${declaredCategory}" does not match sniffed content "${sniffedCategory}"` }],
+          content: [{ type: "text", text: "rejected: declared extension category does not match sniffed content" }],
           isError: true,
         };
       }
@@ -281,22 +306,58 @@ function registerTools(server: McpServer): void {
       }
 
       const sha256 = sha256Hex(buf);
-      const record = await auditCriticalWrite(
-        {
-          action: "file.upload.finalize",
-          classification: "WRITE",
-          allowedMetadataKeys: ["mime_category", "final_size_bytes"],
-          metadata: { mime_category: sniffedCategory, final_size_bytes: buf.length },
-        },
-        () => finalizeFile(upload_id, { filename: pending.declaredFilename, sizeBytes: buf.length, mimeCategory: sniffedCategory, sha256 }),
-      );
-      await consumePendingUpload(upload_id);
-      logger.notice("file accepted", { tool: "rheinagent_file_upload_finalize" });
-
-      return {
-        content: [{ type: "text", text: `"${record.filename}" accepted as ${record.fileId} (${record.sizeBytes} bytes).` }],
-        structuredContent: toWireFile(record),
-      };
+      try {
+        const record = await auditCriticalWrite(
+          {
+            toolName: "rheinagent_file_upload_finalize",
+            metadata: { mime_category: sniffedCategory, final_size_bytes: buf.length },
+          },
+          async () => {
+            const accepted = await finalizeFile(upload_id, {
+              filename: pending.declaredFilename,
+              sizeBytes: buf.length,
+              mimeCategory: sniffedCategory,
+              sha256,
+            });
+            await consumePendingUpload(upload_id);
+            return accepted;
+          },
+          async (accepted) => {
+            const stored = await getFile(accepted.fileId);
+            const integrity = await verifyFile(accepted.fileId);
+            if (
+              !stored ||
+              stored.filename !== accepted.filename ||
+              stored.sizeBytes !== accepted.sizeBytes ||
+              stored.mimeCategory !== accepted.mimeCategory ||
+              stored.sha256 !== accepted.sha256 ||
+              !integrity.matches
+            ) {
+              throw new Error("accepted file postcondition mismatch");
+            }
+            return { verification_result: "ok" };
+          },
+        );
+        logger.notice("file accepted", { tool: "rheinagent_file_upload_finalize" });
+        return {
+          content: [{ type: "text", text: "file accepted as " + record.fileId + " (" + record.sizeBytes + " bytes)." }],
+          structuredContent: toWireFile(record),
+        };
+      } catch (err) {
+        if (err instanceof AuditIncompleteError) {
+          return {
+            content: [{ type: "text", text: err.message + "; the upload may already be accepted. Reconcile file state before retrying finalize." }],
+            isError: true,
+          };
+        }
+        if (err instanceof AuditBusinessVerificationError) {
+          return {
+            content: [{ type: "text", text: err.message + "; the file mutation completed but its postcondition failed. Reconciliation is required." }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text", text: String(err) }], isError: true };
+      }
     }),
   );
 
@@ -359,15 +420,50 @@ function registerTools(server: McpServer): void {
       outputSchema: FileRecordSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    guarded("rheinagent_file_rename", "write", async ({ file_id, new_filename }) => {
+    guarded("rheinagent_file_rename", "critical", async ({ file_id, new_filename }) => {
       try {
-        const record = await renameFile(file_id, new_filename);
-        await auditInvocation("rheinagent_file_rename", { mime_category: record.mimeCategory });
+        const current = await getFile(file_id);
+        if (!current || current.pendingDelete) {
+          return { content: [{ type: "text", text: "file " + file_id + " not found" }], isError: true };
+        }
+        const record = await auditCriticalWrite(
+          {
+            toolName: "rheinagent_file_rename",
+            metadata: { mime_category: classifyExtension(new_filename) ?? "unknown" },
+          },
+          () => renameFile(file_id, new_filename),
+          async (renamed) => {
+            const stored = await getFile(file_id);
+            const integrity = await verifyFile(file_id);
+            if (
+              !stored ||
+              stored.filename !== renamed.filename ||
+              stored.mimeCategory !== current.mimeCategory ||
+              stored.sha256 !== current.sha256 ||
+              !integrity.matches
+            ) {
+              throw new Error("renamed file postcondition mismatch");
+            }
+            return { verification_result: "ok" };
+          },
+        );
         return {
-          content: [{ type: "text", text: `${file_id} renamed to "${record.filename}".` }],
+          content: [{ type: "text", text: file_id + " renamed to " + record.filename + "." }],
           structuredContent: toWireFile(record),
         };
       } catch (err) {
+        if (err instanceof AuditIncompleteError) {
+          return {
+            content: [{ type: "text", text: err.message + "; the rename may already be applied. Do not retry blindly; reconcile file metadata first." }],
+            isError: true,
+          };
+        }
+        if (err instanceof AuditBusinessVerificationError) {
+          return {
+            content: [{ type: "text", text: err.message + "; the rename was applied but its postcondition failed. Reconciliation is required." }],
+            isError: true,
+          };
+        }
         return { content: [{ type: "text", text: String(err) }], isError: true };
       }
     }),
@@ -552,23 +648,54 @@ function registerTools(server: McpServer): void {
       try {
         const resultData = await auditCriticalWrite(
           {
-            action: "file.process.apply",
-            classification: "WRITE",
-            allowedMetadataKeys: ["processor_id"],
+            toolName: "rheinagent_file_process_apply",
             metadata: { processor_id: job.processorId },
           },
           async () => {
-            const output = await processor({ filePath: await filePath(job.fileId), filename: record.filename, mimeCategory: record.mimeCategory, options: job.options });
-            await writeJobResult(job_id, output);
-            return output;
+            try {
+              const output = await processor({
+                filePath: await filePath(job.fileId),
+                filename: record.filename,
+                mimeCategory: record.mimeCategory,
+                options: job.options,
+              });
+              await writeJobResult(job_id, output);
+              await updateJob(job_id, { state: "completed", completedAt: new Date().toISOString() });
+              return output;
+            } catch (error) {
+              await updateJob(job_id, {
+                state: "failed",
+                completedAt: new Date().toISOString(),
+                error: String(error),
+              }).catch(() => {});
+              throw error;
+            }
+          },
+          async () => {
+            const storedJob = await getJob(job_id);
+            const storedResult = await readJobResult(job_id);
+            if (storedJob?.state !== "completed" || storedResult === undefined) {
+              throw new Error("processing job postcondition mismatch");
+            }
+            return { verification_result: "ok" };
           },
         );
-        await updateJob(job_id, { state: "completed", completedAt: new Date().toISOString() });
         const body = { job_id, result: resultData };
-        return { content: [{ type: "text", text: `job ${job_id} completed.` }], structuredContent: body };
+        return { content: [{ type: "text", text: "job " + job_id + " completed." }], structuredContent: body };
       } catch (err) {
-        await updateJob(job_id, { state: "failed", completedAt: new Date().toISOString(), error: String(err) });
-        return { content: [{ type: "text", text: `job ${job_id} failed: ${err}` }], isError: true };
+        if (err instanceof AuditIncompleteError) {
+          return {
+            content: [{ type: "text", text: err.message + "; job " + job_id + " business work completed. Do not rerun the processor; reconcile the audit operation." }],
+            isError: true,
+          };
+        }
+        if (err instanceof AuditBusinessVerificationError) {
+          return {
+            content: [{ type: "text", text: err.message + "; job " + job_id + " needs business-state reconciliation before any retry." }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text", text: "job " + job_id + " failed: " + String(err) }], isError: true };
       }
     }),
   );
@@ -680,16 +807,36 @@ function registerTools(server: McpServer): void {
       }
       try {
         const record = await auditCriticalWrite(
-          { action: "file.delete.apply", classification: "DELETE", allowedMetadataKeys: [] },
+          { toolName: "rheinagent_file_delete_apply" },
           () => applyDelete(delete_token),
+          async (deleted) => {
+            const stored = await getFile(deleted.fileId);
+            const jobs = await listJobsPage({ fileId: deleted.fileId }, undefined, 1);
+            if (stored !== undefined || jobs.jobs.length !== 0) {
+              throw new Error("deleted file postcondition mismatch");
+            }
+            return { verification_result: "ok" };
+          },
         );
         logger.notice("file deleted", { tool: "rheinagent_file_delete_apply" });
         const page = await listFilesPage();
         return {
-          content: [{ type: "text", text: `"${record.filename}" deleted.` }],
+          content: [{ type: "text", text: "file " + record.fileId + " deleted." }],
           structuredContent: { files: page.files.map(toWireFile), next_cursor: page.nextCursor },
         };
       } catch (err) {
+        if (err instanceof AuditIncompleteError) {
+          return {
+            content: [{ type: "text", text: err.message + "; deletion may already be complete. Do not retry the delete token blindly; reconcile file state first." }],
+            isError: true,
+          };
+        }
+        if (err instanceof AuditBusinessVerificationError) {
+          return {
+            content: [{ type: "text", text: err.message + "; deletion was attempted and business-state reconciliation is required." }],
+            isError: true,
+          };
+        }
         return { content: [{ type: "text", text: String(err) }], isError: true };
       }
     }),

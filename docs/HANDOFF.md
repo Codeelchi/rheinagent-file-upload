@@ -15,7 +15,7 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   `npm run build` + `npm run start`/`start:dataplane`. Docker/Compose siehe
   [INSTALLATION.md](INSTALLATION.md).
 - `npm run check` ist das lokale Release-Gate. Stand 2026-09-12 auf dem
-  Windows-Testhost: **159 Tests, 158 PASS, 1 SKIP, 0 FAIL**. Der einzige Skip
+  Windows-Testhost: **167 Tests, 166 PASS, 1 SKIP, 0 FAIL**. Der einzige Skip
   ist der echte Symlink-Erzeugungstest, wenn der Windows-Account Symlinks mit
   `EPERM` verbietet; Linux-CI fuehrt ihn real aus. `npm run build` und
   `git diff --check` sind ebenfalls PASS.
@@ -56,10 +56,14 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   `workflow_dispatch` Run `39` auf exakt demselben Commit ist ebenfalls
   **SUCCESS**; beide Jobs `check` und `docker-runtime-smoke` sind gruen.
 
-- **Wichtigstes danach verbleibendes technisches Gate:** Live-Verifikation des
-  Audit-Hub-Write-Ahead-Vertrags fuer `rheinagent-file-upload@1` gegen den
-  aktuellen `rheinagent-audit`-Stand. Danach erst zentrale
-  License/Manager/Update-Feed-Registrierung.
+- **Audit-Hub-Gate ist abgeschlossen:** Der produkt-eigene Adapter und das
+  Profil `rheinagent-file-upload@1` wurden am 2026-09-12 gegen eine echte,
+  isolierte `rheinagent-audit-core 0.2.0rc1`-Instanz live verifiziert. INTENT ->
+  APPLY -> VERIFY -> RESULT, authentifizierter Service-Health, Invocation und
+  Fail-closed vor der Mutation bei ungueltiger Service-ID sind PASS; offene
+  Intents nach Abschluss: 0. Der produktive Mail-Hub blieb unberuehrt.
+- **Naechstes zentrales Gate:** License/Manager/Update-Feed-Registrierung und
+  anschliessender Install-/Update-/Rollback-Abnahmelauf fuer dieses Produkt.
 - Jede Arbeitsrunde endet mit aktuellem `BUILDLOG.md`/Handoff, sauberem Commit
   und Push auf den Arbeitsbranch. Keine Cross-Repo-Integration als erledigt
   markieren, bevor sie tatsaechlich live/CI-verifiziert wurde.
@@ -112,13 +116,13 @@ Verträge stützt, erneut den aktuellen `main`-Stand prüfen.
   Kanal-Routing `stable`/`candidate`.
 
 ### 4. `rheinagent-audit`
-- Audit-Profil `rheinagent-file-upload@1` mit der in [AUDIT.md](AUDIT.md)
-  dokumentierten Allowlist-Tabelle serverseitig registrieren.
-- Service-Credential für dieses Produkt ausstellen (eigene Service-Chain).
-- **Den implementierten Write-Ahead-Client (`src/lib/audit.ts`) gegen eine
-  echte Hub-Instanz verifizieren** — bisher nur gegen die Dokumentation
-  implementiert, nie live getestet. Das ist der wichtigste offene technische
-  Punkt dieses Handoffs.
+- **Produkt-/Hub-Vertrag erledigt:** Das portable Profil
+  `audit/rheinagent-file-upload-v1.json` und `src/lib/audit.ts` wurden gegen
+  eine echte isolierte Hub-Instanz live abgenommen; siehe [AUDIT.md](AUDIT.md).
+- Fuer einen spaeteren produktiven Kundenbetrieb bleibt nur die zentrale
+  Service-Registrierung mit eigener Service-ID/Credential-Datei als
+  Deployment-Schritt offen. Keine Audit-Credentials werden im Produkt-Image
+  oder Repository eingebrannt.
 
 ## Plattform-Inkonsistenzen (beim Lesen der Referenz-Repos gefunden, nicht hier gelöst)
 
@@ -355,19 +359,15 @@ Resource-Exposure (`resources/list`/`resources/read` für Dateien, zusätzlich
 zu den Tools) — bewusst zurückgestellt, da additiv und nicht
 sicherheitskritisch.
 
-## Nächster Schritt nach jedem obigen Punkt
+## Naechster Schritt nach jedem obigen Punkt
 
-Reihenfolge-Empfehlung, Stand 2026-09-11 nach dem Ausbau zum File-Intake-/
-Analyse-Layer: (1) Audit-Hub-Live-Verifikation, weil sie die
-Kernarchitektur bestätigt, bevor mehr draufgebaut wird — technisch aber
-weiterhin nur mit Zugriff auf eine laufende `rheinagent-audit`-Instanz
-machbar, den bisher keine Session hatte → (2) Docker/Compose einmal gegen
-einen echten Daemon fahren (siehe "Innerhalb dieses Repos noch offen"
-oben) — reine Verifikation, keine neue Implementierung nötig → (3)
-License/Manager/Update-Feed-Registrierung, weil sie Voraussetzung für
-jeden echten Kunden-Test ist → (4) UI-Wiederanbindung, da explizit
-optional. Download-Endpunkt, Health/Doctor-Tool, CI-Workflow,
-SQLite-Migration, Document-Extraction-Processoren (CSV/JSON/Markdown/
-DOCX/XLSX), Chunking, Duplikat-Erkennung, Knowledge-Handoff-Contract und
-Docker/Compose-Implementierung (vormals Teile von Punkt 3) sind seit
-2026-09-11 erledigt, siehe `BUILDLOG.md`.
+Reihenfolge-Empfehlung, Stand 2026-09-12: (1) License/Manager/Update-Feed-
+Registrierung fuer `rheinagent-file-upload`, inklusive Package-v2-Vertrag und
+Kanal-Routing `stable`/`candidate`; (2) kompletter Manager-Abnahmelauf von
+Entitlement -> geschuetztem Feed -> signiertem Paket -> Install/Health/Update/
+Rollback; (3) produktive Audit-Service-Registrierung im Zielsystem als
+Deployment-Schritt; (4) UI-Wiederanbindung nur optional. Audit-Hub-Live-Gate,
+GitHub Docker-Runtime-Smoke, Forgejo-DinD-CI, lokaler kompilierter Vollflow,
+SQLite-Persistenz, Document-Extraction, Duplikat-Erkennung und Knowledge-Handoff
+sind abgeschlossen und duerfen nicht erneut als offene Kern-Gates gefuehrt
+werden.

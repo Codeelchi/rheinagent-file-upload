@@ -1,0 +1,203 @@
+{
+  "schema": "rheinagent-audit-profile/v1",
+  "profile_id": "rheinagent-file-upload@1",
+  "product": "rheinagent-file-upload",
+  "component": "file-upload-mcp",
+  "actions": [
+    {
+      "tool": "rheinagent_file_capabilities_get",
+      "action": "file.capabilities.read",
+      "classification": "READ",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "service",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_health_get",
+      "action": "file.health.read",
+      "classification": "READ",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "service",
+      "allowed_metadata": [
+        "status"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_upload_prepare",
+      "action": "file.upload.prepare",
+      "classification": "PREPARE",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": [
+        "mime_category",
+        "declared_size_bytes"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_upload_finalize",
+      "action": "file.upload.finalize",
+      "classification": "WRITE",
+      "risk": "high",
+      "write_ahead": true,
+      "target_type": "file",
+      "allowed_metadata": [
+        "mime_category",
+        "final_size_bytes",
+        "verification_result"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_list",
+      "action": "file.list",
+      "classification": "READ",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "file-index",
+      "allowed_metadata": [
+        "result_count"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_get",
+      "action": "file.read",
+      "classification": "READ",
+      "risk": "medium",
+      "sensitive": true,
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_rename",
+      "action": "file.rename",
+      "classification": "WRITE",
+      "risk": "medium",
+      "write_ahead": true,
+      "target_type": "file",
+      "allowed_metadata": [
+        "mime_category",
+        "verification_result"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_verify",
+      "action": "file.verify",
+      "classification": "READ",
+      "risk": "medium",
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": [
+        "matches"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_duplicate_check",
+      "action": "file.duplicate.check",
+      "classification": "READ",
+      "risk": "medium",
+      "write_ahead": false,
+      "target_type": "file-index",
+      "allowed_metadata": [
+        "duplicate_count"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_knowledge_handoff_prepare",
+      "action": "file.knowledge.handoff.prepare",
+      "classification": "PREPARE",
+      "risk": "medium",
+      "sensitive": true,
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": [
+        "has_content"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_download_prepare",
+      "action": "file.download.prepare",
+      "classification": "PREPARE",
+      "risk": "medium",
+      "sensitive": true,
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_process_prepare",
+      "action": "file.process.prepare",
+      "classification": "PREPARE",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "job",
+      "allowed_metadata": [
+        "processor_id"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_process_apply",
+      "action": "file.process.apply",
+      "classification": "WRITE",
+      "risk": "high",
+      "write_ahead": true,
+      "target_type": "job",
+      "allowed_metadata": [
+        "processor_id",
+        "verification_result"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_job_get",
+      "action": "file.job.read",
+      "classification": "READ",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "job",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_job_list",
+      "action": "file.job.list",
+      "classification": "READ",
+      "risk": "low",
+      "write_ahead": false,
+      "target_type": "job-index",
+      "allowed_metadata": [
+        "result_count"
+      ]
+    },
+    {
+      "tool": "rheinagent_file_result_get",
+      "action": "file.result.read",
+      "classification": "READ",
+      "risk": "medium",
+      "sensitive": true,
+      "write_ahead": false,
+      "target_type": "job-result",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_delete_prepare",
+      "action": "file.delete.prepare",
+      "classification": "PREPARE",
+      "risk": "medium",
+      "write_ahead": false,
+      "target_type": "file",
+      "allowed_metadata": []
+    },
+    {
+      "tool": "rheinagent_file_delete_apply",
+      "action": "file.delete.apply",
+      "classification": "DELETE",
+      "risk": "high",
+      "write_ahead": true,
+      "target_type": "file",
+      "allowed_metadata": [
+        "verification_result"
+      ]
+    }
+  ]
+}

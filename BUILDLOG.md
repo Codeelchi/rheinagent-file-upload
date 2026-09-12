@@ -2,6 +2,42 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-12 - Audit-Hub-Vertrag produktseitig abgeschlossen und live abgenommen
+
+- `src/lib/audit.ts` auf den aktuellen zentralen Audit-Hub-Vertrag aus
+  `Codeelchi/rheinagent-audit@eb6765ed2c5e59ae9ae66021211e02fed66fae6a`
+  ausgerichtet: semantische Actions, eindeutige Request-IDs, authentifizierter
+  Service-Health und saubere Trennung zwischen Contract/Auth-Fehlern und echter
+  Hub-Unverfuegbarkeit.
+- Produkt-eigenes portables Profil `rheinagent-file-upload@1` fuer alle 18 MCP-
+  Tools unter `audit/rheinagent-file-upload-v1.json`; Drift-Test gleicht Profil,
+  Runtime-Mapping und tatsaechlich registrierte Tools exakt ab. Das Docker-Image
+  liefert das Profil mit aus, aber keine Service-Credentials.
+- Kritische Mutationen `upload_finalize`, `rename`, `process_apply` und
+  `delete_apply` laufen jetzt write-ahead: durable INTENT muss vor der Mutation
+  existieren; danach APPLY -> reale Business-Postcondition -> VERIFY -> RESULT.
+  Nach bereits ausgefuehrter Mutation wird ein nachgelagerter Hub-Ausfall als
+  `AuditIncompleteError` statt faelschlich als Business-Fehlschlag behandelt.
+  Reale Postcondition-Fehler werden separat als
+  `AuditBusinessVerificationError` sichtbar gemacht.
+- Health/Doctor prueft im Hub-Modus getrennt `/healthz` sowie das
+  authentifizierte `/v1/service/health`. Nicht-loopback HTTP bleibt standardmaessig
+  gesperrt; ein bewusst geschuetzter interner Transport braucht explizit
+  `RA_AUDIT_ALLOW_PRIVATE_HTTP=true`.
+- Lokales Release-Gate nach der Umsetzung: **167 Tests / 166 PASS / 1 Windows-
+  Symlink-Privilege-SKIP / 0 FAIL**, `npm run build` PASS und
+  `git diff --check` PASS.
+- Echte Live-Abnahme gegen eine isolierte lokale Instanz von
+  `rheinagent-audit-core 0.2.0rc1`: Profil mit 18 Tools geladen, eigener
+  Test-Service authentifiziert, Invocation akzeptiert, `file.upload.finalize`
+  vollstaendig INTENT -> APPLY -> VERIFY -> RESULT, Negativtest mit ungueltiger
+  Service-ID blockiert die Mutation vor INTENT, Hub-Verify=true,
+  Operation=`complete/success`, offene Intents=0. Der produktive Mail-Hub auf
+  Port 8766 blieb unberuehrt; isolierter Prozess, Temp-State und Test-Credential
+  wurden danach entfernt.
+- Damit ist das Audit-Hub-Live-Gate abgeschlossen. Naechstes zentrales Gate ist
+  die License/Manager/Update-Feed-Integration und deren Install-/Update-/Rollback-
+  Abnahme.
 ## 2026-09-12 - Forgejo Remote-DinD-CI vollstaendig verifiziert
 
 - Der erste native Forgejo-Actions-Lauf auf Commit `6a71690` hat einen realen

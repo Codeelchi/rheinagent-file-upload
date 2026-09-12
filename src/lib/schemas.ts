@@ -193,5 +193,6 @@ export const HealthSchema = z.object({
     service_id_configured: z.boolean().optional(),
     credential_path_configured: z.boolean().optional(),
     hub_endpoint_reachable: z.boolean().optional(),
+    hub_service_healthy: z.boolean().optional(),
   }),
 });
