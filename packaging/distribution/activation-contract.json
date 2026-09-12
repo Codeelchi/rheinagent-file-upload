@@ -1,0 +1,31 @@
+{
+  "contract_version": 1,
+  "profile": "rheinagent-file-upload@1",
+  "strategy": "windows-versioned-runtime-v1",
+  "health_profile": "rheinagent-file-upload-v1",
+  "protected_paths": [
+    "shared/file-upload.env",
+    "shared/audit",
+    "shared/data"
+  ],
+  "persistent_state_globs": ["shared/data/meta/state.sqlite"],
+  "service": {
+    "windows": {
+      "kind": "scheduled_task",
+      "identity": "RheinAgent File Upload"
+    },
+    "linux": {
+      "kind": "systemd",
+      "identity": "rheinagent-file-upload.service"
+    }
+  },
+  "runtime": {
+    "kind": "node-bundled-dual",
+    "control_entry": "dist/server.js",
+    "data_entry": "dist/dataplane.js",
+    "node_executable": "node.exe",
+    "minimum_node_major": 22,
+    "platform": "windows-amd64"
+  },
+  "audit_profile": "rheinagent-file-upload@1"
+}

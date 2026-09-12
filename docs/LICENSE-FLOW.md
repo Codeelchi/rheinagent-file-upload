@@ -1,101 +1,78 @@
 # License Flow
 
-## Produktidentität
+## Produktidentitaet
 
 - `product_slug`: `rheinagent-file-upload`
 - Package-v2-Profil: `rheinagent-file-upload@1`
-- Dieses Dokument spiegelt den bereits produktiv abgenommenen Lizenz-/
-  Aktivierungsfluss ("IMPLEMENTIERT / PRODUKTIV ABGENOMMEN" laut
-  `rheinagent-manager/docs/LICENSING-ACTIVATION-DESIGN-2026-09-10.md`) für
-  dieses neue Produkt — wir treten einer bestehenden, laufenden Plattform
-  bei, nicht einem gemeinsamen MVP-Design.
+- Health-Profil: `rheinagent-file-upload-v1`
+- Audit-Profil: `rheinagent-file-upload@1`
+- Mindest-Manager fuer die aktuelle Windows-Package-v2-Distribution: `0.4.0-rc.7`
+
+Die Produkt-Runtime besitzt keine Kundenlizenz und kein Manager-Credential. Lizenzierung, Entitlements, geschuetzter Release-Download und Installationsentscheidung gehoeren ausschliesslich in License Service, Update Feed und RheinAgent Manager.
 
 ## Verbindlicher Kundenflow
 
 ```text
 Lizenzcode
   -> RheinAgent Manager
-  -> License Service  POST /v1/activate
-  -> geschütztes, installationsspezifisches Manager-Credential
-  -> License Service  GET /v1/me/entitlements
-     {"entitlements": [{"product_slug": "rheinagent-file-upload",
-                         "channels": ["stable"],
-                         "can_install": true, "can_update": true}]}
-  -> Update Feed (AUTH_BACKEND=license_service)
-     POST /internal/v1/authorize-update {credential, product_slug, channel, action}
+  -> License Service POST /v1/activate
+  -> installationsspezifisches Manager-Credential
+  -> License Service GET /v1/me/entitlements
+  -> Update Feed authorize-update (product/channel/action)
   -> signierter Forgejo-Release (.rapkg + .sig + manifest.json + SHA256SUMS)
-  -> RheinAgent Manager: Verify -> Prepare -> Activation -> Health -> ggf. Rollback
+  -> Manager Verify -> Prepare -> Activate -> Health -> Commit/Rollback
 ```
 
-`can_install` und `can_update` sind getrennte Rechte. Manager/UI dürfen nur
-Kanäle anbieten, die der License Service für `rheinagent-file-upload`
-explizit zurückgibt.
+`can_install` und `can_update` sind getrennte Rechte. Zulassige Kanaele sind `stable` und `candidate`. Ein Candidate wird niemals automatisch zu Stable.
 
 ## Ownership-Grenzen
 
-**RheinAgent Manager besitzt:**
-Kunden-Lizenzaktivierung, `manager_instance_id`, das geschützte
-Manager-Credential, Entitlement-Refresh, Produkt-/Kanal-/Aktions-Auswahl,
-signierten Download über den Update Feed, Package-v2-Verifikation,
-Fresh-Bootstrap/Update/Health/Rollback/Registrierung.
+**RheinAgent Manager** besitzt Lizenzaktivierung auf dem Arbeitsplatz, Credential-Speicherung, Entitlement-Refresh, Produkt-/Kanalwahl, Package-v2-Verifikation, Fresh-Install, Update, Health und Rollback.
 
-**License Service besitzt:**
-Kunden/Lizenzen/Seats, `rheinagent-file-upload`-Entitlements, Kanal-Rechte,
-getrennte `install`-/`update`-Rechte, Widerruf des Manager-Credentials.
+**License Service** besitzt Kunden, Lizenzen, Seats, `rheinagent-file-upload`-Entitlements, Kanalrechte sowie getrennte Install-/Update-Rechte.
 
-**Update Feed besitzt:**
-Geschützte Release-Auslieferung, autorisiert jede geschützte Asset-Anfrage
-gegen den License Service. Forgejo ist Release-Speicher/Mirror, **nicht**
-der normale Kunden-Download-Pfad.
+**Update Feed** besitzt den geschuetzten Auslieferungspfad und autorisiert jede geschuetzte Asset-Anfrage gegen den License Service. Die Repository-Auswahl bleibt statisch allowlisted; ein Client darf kein beliebiges Forgejo-Repository waehlen.
 
-**Diese Produkt-Runtime besitzt nichts Lizenzbezogenes.** Konkret:
+**File Upload Runtime** besitzt ausschliesslich Produktkonfiguration und Nutzdaten. Insbesondere:
 
-- Kein eigener Lizenz-Speicher
-- Keine Lizenzcode-Eingabe in Installer oder Laufzeit
-- Das Manager-Credential wird **niemals** in Umgebungsvariablen, Datenbank,
-  Datenverzeichnis oder Logs dieses Produkts gespeichert
-- Kein direkter Kunden-Download von Forgejo als normaler Pfad
-- Kein automatischer Fallback von License Service auf statische
-  Produktrechte
-- Keine vom Package selbst definierten beliebigen Install-/Health-Befehle
-  außerhalb des Manager-eigenen Profils (siehe [VERSIONING.md](VERSIONING.md))
-- Keine Aufweichung der festen Service-/Task-Identität
-- Kein stillschweigendes Ummünzen alter Audit-Credentials auf eine neue
-  Profilversion
-- Keine Stable-Promotion eines Candidate ohne separate Release-Entscheidung
+- kein eigener License Store;
+- kein Lizenzcode in Runtime-Env, SQLite oder Logs;
+- kein Manager-Credential im Produkt;
+- kein direkter Forgejo-Kundendownload als Normalpfad;
+- keine vom Package frei gewaehlten Install-/Health-Kommandos;
+- MCP-Zugriffstoken und Kundenlizenz bleiben getrennte Sicherheitsdomaenen.
 
-Der MCP-Bearer für den Tool-Zugriff dieses Produkts ist eine **getrennte**
-Sicherheitsdomäne vom Kunden-Lizenz-Credential — beide werden nie gemischt.
+## Manager-owned Windows Aktivierung
 
-## Repo-Anforderungen für die Umstellung
+Die aktuelle Distribution verwendet `windows-versioned-runtime-v1`. Das Package liefert nur den verifizierten Runtime-Payload. Der Manager besitzt die Aktivierung und erzeugt bei Fresh-Install:
 
-1. License Service: neue Produktzeile `rheinagent-file-upload` mit
-   Kanälen `stable`/`candidate` anlegen (License-Service-Repo, nicht hier).
-2. Manager: `rheinagent-file-upload@1` zur vertrauten Profilliste hinzufügen
-   (analog zu `rheinagent-knowledge@1`) — Manager-Repo, nicht hier.
-3. Update Feed: Produkt-Manifest-Eintrag für `rheinagent-file-upload`
-   anlegen — Update-Feed-Repo, nicht hier.
+- `shared/file-upload.env` mit Loopback-Bindings und standardmaessig `RA_AUDIT_MODE=off`;
+- `shared/data`, `shared/logs`, `shared/audit`;
+- `manager/health.json` fuer beide HTTP-Liveness-Endpoints und den MCP-Health-Smoke;
+- einen festen Scheduled Task `RheinAgent File Upload`;
+- einen festen Launcher fuer das gebundelte `node.exe`, `dist/server.js` und `dist/dataplane.js`.
 
-Alle drei Schritte sind in [HANDOFF.md](HANDOFF.md) als offene
-Cross-Repo-Arbeit vermerkt; dieses Repo nimmt sie nicht selbst vor.
+Geschuetzte Pfade sind `shared/file-upload.env`, `shared/audit` und `shared/data`. Das Paket darf diese Bereiche bei Updates nicht ersetzen.
 
-## Aktueller Migrationsstatus
+## Cross-Repo-Status
 
-**Noch nicht eingebunden.** Dieses Produkt existiert als Repo und
-Implementierung, ist aber bei Manager/License-Service/Update-Feed noch nicht
-registriert. Ein Kunde kann dieses Produkt aktuell nicht über den
-Standard-Lizenzfluss installieren, bis Schritte 1–3 oben erledigt sind.
+Der Integrationscode ist in den zugehoerigen Arbeitszweigen umgesetzt:
+
+1. License Service akzeptiert `rheinagent-file-upload` als Entitlement-Produkt und die Admin-UI fuehrt es im Produktkatalog.
+2. Manager `0.4.0-rc.7` enthaelt das vertraute Profil `rheinagent-file-upload@1`, den Manager-owned Fresh-Install sowie Dual-Plane-/MCP-Health-Pruefung.
+3. Update Feed `0.4.1` enthaelt die statische Produktzuordnung auf `rheinagent/rheinagent-file-upload`.
+4. Dieses Repo baut und verifiziert Package-v2 fuer Windows x64 und bindet den produktiven Ed25519-Public-Key als Trust Anchor ein.
+
+Quellcode-Integration ist nicht dasselbe wie Release-Publikation: Ein Kunde kann das Produkt erst ueber den Standardflow beziehen, wenn die jeweiligen Aenderungen in ihren kanonischen Repositories angenommen sind und ein produktiv signierter Forgejo-Candidate veroeffentlicht wurde.
 
 ## Abnahmekriterium
 
-Diese Umstellung gilt erst als abgeschlossen, wenn end-to-end nachgewiesen ist:
+Der Gesamtflow gilt erst als produktiv abgenommen, wenn alle Punkte nachweislich PASS sind:
 
-- [ ] License Service liefert ein Entitlement mit `product_slug:
-      "rheinagent-file-upload"` für einen Test-Kunden zurück
-- [ ] Manager akzeptiert das Package-v2-Profil `rheinagent-file-upload@1`
-      bei Verify/Activation
-- [ ] Update Feed autorisiert `install`/`update` für dieses Produkt über
-      `authorize-update`
-- [ ] Ein Fresh-Install über den Manager erzeugt eine laufende, health-grüne
-      Instanz dieses Produkts ohne manuelle Eingriffe außerhalb des
-      Manager-Flows
+- License Service liefert ein `rheinagent-file-upload`-Entitlement fuer einen Testkunden.
+- Manager akzeptiert exakt `rheinagent-file-upload@1` und verweigert Profil-Drift.
+- Update Feed autorisiert `install`/`update` fuer Produkt und Kanal und bleibt bei unbekannten Produkten fail-closed.
+- Ein produktiv signiertes Package-v2 wird vom Manager kryptografisch verifiziert.
+- Fresh-Install startet beide Planes, HTTP-Liveness und `rheinagent_file_health_get` sind gruen.
+- Ein Update-/Rollback-Test erhaelt `shared/data` und weitere geschuetzte Pfade.
+- Audit-Hub-Betrieb wird nur mit explizit fuer `rheinagent-file-upload@1` registriertem Credential aktiviert.

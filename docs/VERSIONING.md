@@ -1,69 +1,61 @@
-# Versioning
+# Versioning und Distribution
 
 ## Kanonische Versionsquelle
 
-`package.json#version` in diesem Repo ist die kanonische Versionsquelle.
-SemVer (`MAJOR.MINOR.PATCH`, Pre-Releases als `-rc.N`). Aktuell: `0.3.0`
-(noch nicht bei Manager/License Service/Update Feed registriert — siehe
-[LICENSE-FLOW.md](LICENSE-FLOW.md)). Dieser Wert muss bei jeder
-`package.json`-Versionsänderung manuell mitgezogen werden — es gibt keine
-automatisierte Drift-Prüfung zwischen den beiden Dateien.
+`package.json#version` ist die kanonische Produktversion. Aktuell: `0.3.0`.
 
-`0.2.0` → `0.3.0` (2026-09-11): MINOR wegen echter Feature-Erweiterung
-(6 neue Processor, 2 neue Tools — `duplicate_check`,
-`knowledge_handoff_prepare` —, neue `mime_category: "office"`) **und**
-additiver, aber bei strikter Schema-Validierung sichtbarer Erweiterung von
-`CapabilitiesSchema`/`HealthSchema` (neue Pflichtfelder
-`product_version`/`state_schema_version`/`processor_registry`/`jobs`).
-Da das Produkt noch vor Stable steht (siehe unten, "Release-Historie":
-noch kein getaggtes Release), ist das eine zulässige Contract-Bereinigung,
-keine nachträgliche Breaking-Change-Behandlung nötig.
-Ein Release-Tag in Git muss exakt `v<version>` aus `package.json`
-entsprechen; eine Abweichung ist ein Build-Abbruch-Kriterium, nicht etwas,
-das die Release-Pipeline stillschweigend korrigiert.
+Ein Git-Release-Tag muss exakt `v<version>` entsprechen. Ein Branch, CI-Artefakt oder lokal gebautes Paket ist niemals automatisch ein Kunden-Release.
 
-## Package-v2-Konzept
+## Package-v2-Profil
 
-Gemäß `rheinagent-manager/docs/PACKAGE-CONTRACT-V2.md`: ein Package-v2-
-Manifest beweist nicht nur Identität/Dateien/Bytes (das leistet schon v1),
-sondern deklariert ein **Activation-Objekt**, das der Manager gegen sein
-eigenes, versioniertes Profil auf exakte Gleichheit prüft — das Package
-wählt weder Task/Unit noch Health-Befehl noch Strategie selbst.
-
-Zielstruktur für `rheinagent-file-upload@1` (noch nicht Manager-seitig
-registriert, siehe [HANDOFF.md](HANDOFF.md)):
+Die Windows-Distribution ist auf den Manager-Vertrag `rheinagent-file-upload@1` festgelegt:
 
 ```json
 {
   "contract_version": 1,
   "profile": "rheinagent-file-upload@1",
-  "strategy": "<noch mit Manager abzustimmen>",
+  "strategy": "windows-versioned-runtime-v1",
   "health_profile": "rheinagent-file-upload-v1",
-  "protected_paths": ["data/meta/", "data/files/"],
-  "persistent_state_globs": ["data/meta/state.sqlite*", "data/files/**"],
+  "protected_paths": [
+    "shared/file-upload.env",
+    "shared/audit",
+    "shared/data"
+  ],
+  "persistent_state_globs": ["shared/data/meta/state.sqlite"],
   "service": {
-    "windows": { "kind": "<tbd>", "identity": "RheinAgent File Upload" },
-    "linux": { "kind": "systemd", "identity": "rheinagent-file-upload.service" }
-  }
+    "windows": {"kind": "scheduled_task", "identity": "RheinAgent File Upload"},
+    "linux": {"kind": "systemd", "identity": "rheinagent-file-upload.service"}
+  },
+  "runtime": {
+    "kind": "node-bundled-dual",
+    "control_entry": "dist/server.js",
+    "data_entry": "dist/dataplane.js",
+    "node_executable": "node.exe",
+    "minimum_node_major": 22,
+    "platform": "windows-amd64"
+  },
+  "audit_profile": "rheinagent-file-upload@1"
 }
 ```
 
-Dieses Produkt **deklariert** diese Struktur nur — Manager-seitiges
-Vertrauen in `rheinagent-file-upload@1` ist eine eigenständige
-Manager-Repo-Änderung, nicht Teil dieses Repos. `installers={}` ist der
-vorgesehene Ansatz, falls ein Manager-owned Fresh-Bootstrap gewünscht wird
-(kein paketseitig gewähltes Installationskommando).
+Die kanonische maschinenlesbare Fassung liegt in `packaging/distribution/activation-contract.json`. `verify_release.py` verlangt exakte Gleichheit; das Package darf keine alternative Aktivierungsstrategie einschleusen. `installers` ist absichtlich `{}`: Fresh-Install und Service-Aktivierung gehoeren dem Manager.
 
-## Release-Kanäle
+## Windows Runtime Bundle
 
-Ausschließlich `stable` und `candidate`, exakt wie von `rheinagent-update-feed`
-vorgegeben. Ein beweglicher Branch ist nie selbst ein Kunden-Release. Jeder
-`candidate` muss vor einer `stable`-Promotion eine eigene, explizite
-Release-Entscheidung durchlaufen (keine automatische Promotion).
+`packaging/distribution/build_windows_runtime.ps1` baut auf Windows x64 mit Node >=22:
 
-## Release-Metadaten (Bundle-Form)
+- `node.exe`;
+- `dist/server.js` und `dist/dataplane.js`;
+- Produktionsabhaengigkeiten aus `package-lock.json`;
+- Audit-Profil `audit/rheinagent-file-upload-v1.json`;
+- Activation Contract;
+- `.runtime-version` und `RHEINAGENT_NODE_RUNTIME.json`.
 
-Exakt die vom Update Feed erwartete Dateimenge pro Release:
+Optionale npm-Abhaengigkeiten werden bewusst ausgelassen (`npm ci --omit=dev --omit=optional`), weil die optionale native Canvas-Abhaengigkeit von `pdfjs-dist` fuer den hier implementierten PDF-Textpfad nicht erforderlich ist und das Paket unnoetig vergroessert.
+
+## Signierung und Release-Bundle
+
+Ein deliverbares Release besteht exakt aus:
 
 ```text
 rheinagent-file-upload-<version>.rapkg
@@ -72,70 +64,44 @@ manifest.json
 SHA256SUMS
 ```
 
-Signierung/Upload zum Feed sind Teil der Release-Tooling-Pipeline, nicht
-dieses Tool-Repos selbst — dieses Repo liefert nur den Build-Input dafür.
+`build_release.py` erzeugt Package-v2 und verlangt standardmaessig Manager >= `0.4.0-rc.7`. `verify_release.py` prueft Signatur, Hashes, Package-Inventar, Pfadsicherheit, Runtime-Identitaet und Activation Contract.
 
-## Update-/Rollback-Vertrag (Zielbild)
+Der im Repo gespeicherte Public Key ist oeffentlich und darf committed werden. Erwarteter SHA-256 der produktiven Public-Key-Datei:
 
-Der Manager führt Update/Rollback end-to-end aus (Verify → Prepare →
-Activation → Health → Commit/Rollback). Voraussetzung auf unserer Seite:
-`persistent_state_globs` im Package-v2-Manifest müssen exakt die Pfade
-abdecken, die ein Rollback erhalten muss (`data/meta/state.sqlite*` —
-Haupt-DB-Datei plus WAL-/SHM-Sidecar-Dateien, siehe
-[STATE-MIGRATION.md](STATE-MIGRATION.md) — und `data/files/**`),
-und `protected_paths` dürfen von einem Update nicht überschrieben werden.
-Diese Felder sind oben als Zielstruktur benannt, aber noch nicht gegen einen
-echten Manager-Update-Lauf verifiziert. Der laufende Dienst kann den physischen
-Data-Root ?ber `RHEINAGENT_FILE_UPLOAD_DATA_DIR` verlagern; ein sp?teres
-Manager-Package muss diesen tats?chlichen Installationspfad auf die logischen
-`data/...`-Protected-/Persistent-Globs abbilden. Vor Update/Rollback senden die
-Prozesse auf `SIGTERM` einen kontrollierten HTTP-Shutdown und schlie?en ihre
-SQLite-Handles.
+`1c4f5d5ad3313381b7d96d8782c853d950a87ad2f6a285b2c060d325d77e4a15`
 
-## Health/Doctor-Konzept
+Ein privater Produktions-Signierschluessel darf niemals im Repo, in CI-Artefakten oder im Runtime-Paket landen. Die Distribution-CI verwendet ausschliesslich einen ephemeren Testschluessel fuer den Package-Smoke.
 
-Health-Profil `rheinagent-file-upload-v1`, seit 2026-09-11 implementiert als
-Tool `rheinagent_file_health_get` (siehe [ARCHITECTURE.md](ARCHITECTURE.md)):
+## Kanaele
 
-- `control_plane_reachable` (per Definition `true` — das Tool antwortet
-  gerade) ✅
-- `data_plane_reachable` (`GET /healthz` auf Port 3902, 2 s Timeout) ✅
-- `staging_dir_writable`, `files_dir_writable` (`fs.access(dir, W_OK)`,
-  keine Probe-Datei) ✅
-- `audit_mode` + bei `hub`: **welche** Config-Variablen gesetzt sind
-  (`endpoint_configured`/`service_id_configured`/`credential_path_configured`)
-  und `hub_endpoint_reachable` als bewusst protokoll-loser
-  Best-Effort-Netzwerkcheck ✅ — **noch offen**: Service-Registrierung,
-  Protokoll-Kompatibilität und Anzahl offener/unvollständiger Operationen
-  gegen eine echte Hub-Instanz (braucht die in [HANDOFF.md](HANDOFF.md)
-  Punkt 4 beschriebene Cross-Repo-Registrierung zuerst)
+- `candidate`: explizit veroeffentlichter prerelease-Candidate.
+- `stable`: separate Promotion/Release-Entscheidung.
 
-Kein Health-Check darf je Dateiinhalte, Hashes einzelner Dateien oder
-Audit-Credentials zurückgeben — eingehalten: `hub_endpoint_reachable` prüft
-nur Netzwerk-Erreichbarkeit ohne Credential im Request.
+Keine automatische Stable-Promotion.
 
-## Schema-Kompatibilität
+## Lokale Abnahme 2026-09-12
 
-`FileRecord`/`JobRecord`/`PendingUpload`/`DeleteTicket` (`src/lib/store.ts`)
-sind interne JSON-Strukturen ohne eigene Versionsfelder in v1 — ein
-künftiges Breaking-Change an diesen Strukturen braucht eine Migrationsnotiz
-hier, bevor es gemacht wird.
+- `npm run check`: 167 Tests, 166 PASS, 1 Windows-Symlink-Privilege-Skip, 0 FAIL.
+- TypeScript-Build: PASS.
+- Windows Runtime Builder: PASS mit gebundeltem Node 24 und 11 Prozessoren.
+- Package-v2-Smoke mit ephemerem Ed25519-Key: PASS.
+- Verifiziertes lokales Testpaket: ca. 49.7 MB und damit unter dem 64-MiB-Update-Feed-Limit.
+- Produktiver Public-Key-Hash: exakt wie oben.
 
-## Release-Gate
+Diese lokale Signatur ist nur Testevidenz und kein produktiv signierter Release.
 
-Vor jedem Release-Tag:
+## Release Gate
 
-- [ ] `npm run check` fehlerfrei (= `tsc --noEmit` + alle automatisierten Tests unter `test/`)
-- [ ] GitHub-CI `docker-runtime-smoke` gr?n: echter Compose-Start beider Planes, Upload/Extraction/Duplicate/Knowledge-Handoff/Download und Persistenzpr?fung nach Container-Restart
-- [ ] Manuelle End-to-End-Probe aller 18 Tools (siehe [BUILDLOG.md](../BUILDLOG.md)
-      für das zuletzt dokumentierte Ergebnis) — automatisierte Tests ersetzen
-      das noch nicht vollständig, siehe [HANDOFF.md](HANDOFF.md) zum aktuellen
-      Abdeckungsstand
-- [ ] `BUILDLOG.md` aktualisiert
-- [ ] Kein Secret, kein `data/`-Inhalt im Diff (`git status` vor jedem Commit)
+Vor einem Release-Tag muessen mindestens PASS sein:
+
+- `npm run check` und `npm run build`;
+- GitHub-CI und Forgejo-CI fuer den exakten Quell-SHA;
+- Windows-Runtime-Job und Package-v2-Smoke;
+- keine Secrets, `.state/`, `data/`, privaten PEM-Dateien oder CI-Key-Artefakte im Commit;
+- Package <= 64 MiB und <= Manager-Limits fuer Dateianzahl/Expanded Size;
+- produktive Signierung nur ueber den bestehenden geschuetzten Signierpfad;
+- anschliessend Manager Install/Health/Update/Rollback und License/Feed-E2E.
 
 ## Release-Historie
 
-Noch kein getaggtes Release. Erster Eintrag folgt mit `v<package.json#version>`,
-sobald die in [LICENSE-FLOW.md](LICENSE-FLOW.md) gelistete Cross-Repo-
-Registrierung zumindest für einen Test-Kunden durchgeführt wurde.
+Noch kein produktiv freigegebener File-Upload-Release. `0.3.0` ist der aktuelle Source-/Distribution-Candidate; eine spaetere Forgejo-Veroeffentlichung wird hier mit Quell-SHA, Signatur-Key-ID und Kanal dokumentiert.
