@@ -1,0 +1,7 @@
+services:
+  file-control:
+    environment:
+      RHEINAGENT_FILE_UPLOAD_BIND_HOST: "0.0.0.0"
+  file-data:
+    environment:
+      RHEINAGENT_FILE_UPLOAD_BIND_HOST: "0.0.0.0"
