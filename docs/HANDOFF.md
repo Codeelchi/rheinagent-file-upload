@@ -40,6 +40,13 @@ selbst vor — ausschließlich schreibend in diesem Repo, wie vorgegeben.
   beide Planes live, voller MCP+Data-Plane-Flow, Container-Restart und
   Persistenzpruefung. Der lokale Windows-Testhost hat **keinen** laufenden
   Docker-Daemon; deshalb ist der GitHub-Job die autoritative Container-Abnahme.
+- Forgejo-Distribution ist vorbereitet: internes Repo
+  `rheinagent/rheinagent-file-upload`, Feature-Branch gespiegelt und
+  `.forgejo/workflows/ci.yml` mit denselben Check-/Docker-Runtime-Gates wie
+  GitHub vorhanden. GitHub Run `34698929363` auf `e5b0972` ist gruen.
+  Forgejo CI muss noch durch einen echten Forgejo-HTTP-Push ausgeloest und
+  als separates Gate verifiziert werden.
+
 - **Wichtigstes danach verbleibendes technisches Gate:** Live-Verifikation des
   Audit-Hub-Write-Ahead-Vertrags fuer `rheinagent-file-upload@1` gegen den
   aktuellen `rheinagent-audit`-Stand. Danach erst zentrale

@@ -2,6 +2,23 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-12 - Forgejo-Mirror und zweite CI vorbereitet
+
+- Forgejo-Repository `rheinagent/rheinagent-file-upload` ist als interne
+  Distribution-Kopie vorhanden; `main` bleibt auf dem GitHub-Main-Stand und
+  der Arbeitsbranch `claude/mcp-server-continuation-fb3oq2` wurde bis zum
+  aktuellen Feature-Stand synchronisiert.
+- Additiver Forgejo-Workflow `.forgejo/workflows/ci.yml` hinzugefuegt. Er nutzt
+  die Forgejo-Action-URLs und bildet dieselben beiden Gates ab wie GitHub:
+  Node-22 Check/Build sowie echten Docker-Compose Runtime-Smoke mit
+  Upload/Extraction/Knowledge-Handoff/Download und Restart-Persistenz.
+- GitHub Actions fuer Commit `e5b09727733d8e5f065ded31b629356a43099784`
+  ist vollstaendig gruen (Run `34698929363`). Damit ist der echte
+  Docker/Compose-Flow auf GitHub CI bestaetigt.
+- Der dedizierte Forgejo Actions Runner ist online. Als naechstes Gate wird
+  derselbe Feature-Stand ueber Forgejos eigenen Git-HTTP-Pfad gepusht, damit
+  der neue Forgejo-Workflow serverseitig ausgeloest und dort separat
+  verifiziert wird.
 ## 2026-09-12 ? Compiled-Runtime-Pfade, Windows-Lifecycle und echter Runtime-Smoke
 
 Bei der Abnahme des **kompilierten** Builds auf einem frischen Windows-Checkout
