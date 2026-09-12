@@ -2,6 +2,35 @@
 
 Chronologisches Protokoll der Änderungen an diesem MCP-Server. Neueste Einträge oben.
 
+## 2026-09-12 - Forgejo Remote-DinD-CI vollstaendig verifiziert
+
+- Der erste native Forgejo-Actions-Lauf auf Commit `6a71690` hat einen realen
+  Infrastrukturunterschied sichtbar gemacht: der Node-Check lief erfolgreich,
+  aber `docker-runtime-smoke` brach sofort ab, weil der Runner fuer
+  `ubuntu-latest` ein `node:lts`-Job-Image ohne Docker-CLI startet. Das war
+  kein Produktfehler.
+- Commit `a808e5d49623cf6f5694f63c5672ed380b0e76d4` behebt diesen Forgejo-
+  spezifischen Pfad mit `scripts/forgejo-runtime-smoke.sh` und
+  `.forgejo/docker-compose.ci.yml`: aktueller Docker-CE-CLI plus Compose-
+  Plugin aus dem offiziellen Docker-APT-Repository, dynamische Ermittlung des
+  Remote-DinD-Gateways, CI-Bind der beiden Planes an `0.0.0.0`, getrennte
+  Smoke-URLs und garantiertes `docker compose down -v` im Cleanup.
+- Vor dem Push wurde der Aufbau realistisch verschachtelt getestet: ein
+  `node:lts`-Job-Container lief gegen einen separaten Docker-in-Docker-Daemon
+  29.8.0. Build beider Images, Health, Upload/Finalize, Extraction, Duplicate-
+  Check, Knowledge-Handoff, Download, Restart und Persistenz-Verifikation
+  liefen komplett durch (`NESTED_DIND_SMOKE_PASS`).
+- Lokales Release-Gate blieb gruen: `npm run check` = 159 Tests / 158 PASS /
+  1 privilegienbedingter Windows-Symlink-SKIP / 0 FAIL; `npm run build` und
+  `git diff --check` PASS.
+- GitHub Actions Run `34701497630` auf `a808e5d` ist SUCCESS.
+- Der Feature-Branch im internen Forgejo-Repo wurde auf exakt denselben SHA
+  synchronisiert. Nativer Forgejo `workflow_dispatch` Run `39` ist SUCCESS;
+  Jobs `check` (Job 66) und `docker-runtime-smoke` (Job 67) sind beide gruen.
+- Damit ist das zweite CI-Gate nicht mehr offen. Naechstes technisches Gate
+  bleibt die Live-Verifikation des Audit-Hub-Write-Ahead-Vertrags; danach
+  folgen License/Manager/Update-Feed-Integration.
+
 ## 2026-09-12 - Forgejo-Mirror und zweite CI vorbereitet
 
 - Forgejo-Repository `rheinagent/rheinagent-file-upload` ist als interne
